@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -158,10 +160,8 @@ func main() {
 		}
 	}
 
-	// 统计数据: key = 字段值组合, value = TrafficStats
-	statsMap := make(map[string]*TrafficStats)
-
 	// 查找所有tar.gz文件
+	var tarGzFiles []string
 	err = filepath.Walk(dirPath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -177,12 +177,7 @@ func main() {
 			return nil
 		}
 
-		// 处理tar.gz文件
-		err = processTarGz(path, statsMap, fieldIndexes, filters)
-		if err != nil {
-			fmt.Printf("  警告: 处理文件 %s 时出错: %v\n", info.Name(), err)
-		}
-
+		tarGzFiles = append(tarGzFiles, path)
 		return nil
 	})
 
@@ -191,8 +186,110 @@ func main() {
 		os.Exit(1)
 	}
 
+	fmt.Printf("找到 %d 个tar.gz文件\n", len(tarGzFiles))
+
+	// 并发处理文件
+	statsMap := processFilesConcurrent(tarGzFiles, fieldIndexes, filters)
+
 	// 输出统计结果
 	printResults(statsMap, fieldIndexes, *topN, *sortBy, *output)
+}
+
+// processFilesConcurrent 并发处理多个tar.gz文件
+func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters *LogFilters) map[string]*TrafficStats {
+	// 使用CPU核心数作为协程数
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(files) {
+		numWorkers = len(files)
+	}
+
+	if numWorkers == 0 {
+		return make(map[string]*TrafficStats)
+	}
+
+	fmt.Printf("使用 %d 个协程并发处理\n", numWorkers)
+
+	// 创建任务通道
+	taskCh := make(chan string, len(files))
+	for _, file := range files {
+		taskCh <- file
+	}
+	close(taskCh)
+
+	// 结果通道
+	type result struct {
+		stats map[string]*TrafficStats
+		err   error
+	}
+	resultCh := make(chan result, len(files))
+
+	// 启动工作协程
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for filePath := range taskCh {
+				// 每个协程独立统计
+				localStats := make(map[string]*TrafficStats)
+
+				err := processTarGz(filePath, localStats, fieldIndexes, filters)
+				if err != nil {
+					fileName := filepath.Base(filePath)
+					fmt.Printf("  [Worker %d] 警告: 处理文件 %s 时出错: %v\n", workerID, fileName, err)
+				}
+
+				// 发送结果
+				resultCh <- result{stats: localStats, err: err}
+			}
+		}(i)
+	}
+
+	// 关闭结果通道(等待所有worker完成)
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// 汇总结果
+	finalStats := make(map[string]*TrafficStats)
+	processedFiles := 0
+
+	for res := range resultCh {
+		processedFiles++
+		if res.stats != nil {
+			// 合并统计结果
+			mergeStats(finalStats, res.stats)
+		}
+
+		// 显示进度
+		if processedFiles%10 == 0 || processedFiles == len(files) {
+			fmt.Printf("\r已处理: %d/%d 文件", processedFiles, len(files))
+		}
+	}
+	fmt.Println()
+
+	return finalStats
+}
+
+// mergeStats 合并统计结果(将src合并到dst)
+func mergeStats(dst, src map[string]*TrafficStats) {
+	for key, srcStats := range src {
+		if dstStats, exists := dst[key]; exists {
+			// key已存在,累加流量
+			dstStats.UpTotal += srcStats.UpTotal
+			dstStats.DownTotal += srcStats.DownTotal
+		} else {
+			// key不存在,直接复制
+			dst[key] = &TrafficStats{
+				Key:       srcStats.Key,
+				Fields:    srcStats.Fields,
+				UpTotal:   srcStats.UpTotal,
+				DownTotal: srcStats.DownTotal,
+			}
+		}
+	}
 }
 
 // parseFieldNames 解析字段名到索引的映射
