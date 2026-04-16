@@ -26,6 +26,7 @@ func main() {
 	output := flag.String("output", "", "输出CSV文件名(默认自动生成)")
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 	mergeDir := flag.String("merge", "", "合并目录: 将目录下所有up/down/total CSV文件按fields合并")
+	duration := flag.Float64("duration", 0, "持续时间(秒)，用于计算Mbps")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
@@ -34,37 +35,18 @@ func main() {
 	startTime := flag.String("start", "", "开始时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	endTime := flag.String("end", "", "结束时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	configFile := flag.String("config", "config.json", "过滤器配置文件路径(JSON格式，可选)")
+	pprofSwitch := flag.Bool("pprof", false, "是否开启性能分析(默认false)")
 
 	flag.Parse()
 
 	// 如果是merge模式，直接处理并退出
 	if *mergeDir != "" {
-		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN); err != nil {
+		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN, *duration); err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
-
-	// 性能分析: CPU profile
-	cpuProfile, err := os.Create("cpu_profile.prof")
-	if err != nil {
-		fmt.Printf("创建CPU profile文件失败: %v\n", err)
-		return
-	}
-	pprof.StartCPUProfile(cpuProfile)
-	defer pprof.StopCPUProfile()
-
-	// 性能分析: 内存 profile
-	defer func() {
-		memProfile, err := os.Create("mem_profile.prof")
-		if err != nil {
-			fmt.Printf("创建内存profile文件失败: %v\n", err)
-			return
-		}
-		pprof.WriteHeapProfile(memProfile)
-		memProfile.Close()
-	}()
 
 	// 验证排序参数
 	if *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
@@ -103,7 +85,7 @@ func main() {
 	}
 
 	// 合并配置（命令行优先级高于配置文件）
-	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters)
+	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, *pprofSwitch)
 	if err != nil {
 		fmt.Printf("错误: 合并配置失败: %v\n", err)
 		os.Exit(1)
@@ -120,6 +102,32 @@ func main() {
 		*output = mergedConfig.Output
 	}
 	dirPath = mergedConfig.LogPath
+
+	// 性能分析: CPU profile (根据配置开关控制)
+	if mergedConfig.PprofSwitch {
+		cpuProfile, err := os.Create("cpu_profile.prof")
+		if err != nil {
+			fmt.Printf("创建CPU profile文件失败: %v\n", err)
+			return
+		}
+		pprof.StartCPUProfile(cpuProfile)
+		defer pprof.StopCPUProfile()
+		fmt.Println("性能分析已开启")
+	}
+
+	// 性能分析: 内存 profile (根据配置开关控制)
+	if mergedConfig.PprofSwitch {
+		defer func() {
+			memProfile, err := os.Create("mem_profile.prof")
+			if err != nil {
+				fmt.Printf("创建内存profile文件失败: %v\n", err)
+				return
+			}
+			pprof.WriteHeapProfile(memProfile)
+			memProfile.Close()
+			fmt.Println("内存profile已保存: mem_profile.prof")
+		}()
+	}
 
 	// 创建过滤器
 	filters := &models.LogFilters{

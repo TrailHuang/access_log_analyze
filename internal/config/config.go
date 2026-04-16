@@ -26,6 +26,9 @@ type FilterConfig struct {
 	BatchSize int    `json:"batch_size,omitempty"`
 	Output    string `json:"output,omitempty"`
 	LogPath   string `json:"log_path,omitempty"`
+
+	// 性能分析参数
+	PprofSwitch bool `json:"pprof_switch,omitempty"` // 是否开启性能分析，默认false
 }
 
 // LoadFilterConfig 从配置文件加载过滤规则
@@ -61,7 +64,7 @@ func LoadFilterConfig(configPath string) (*FilterConfig, error) {
 }
 
 // MergeConfig 合并配置文件和命令行参数，命令行参数优先级更高
-func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string) (*FilterConfig, error) {
+func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdPprofSwitch bool) (*FilterConfig, error) {
 	// 如果没有配置文件，直接返回命令行参数
 	if configFile == nil {
 		return &FilterConfig{
@@ -78,6 +81,7 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 			SIPFilters:    cmdSIPFilters,
 			DIPFilters:    cmdDIPFilters,
 			DomainFilters: cmdDomainFilters,
+			PprofSwitch:   cmdPprofSwitch,
 		}, nil
 	}
 
@@ -96,6 +100,7 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 		SIPFilters:    configFile.SIPFilters,
 		DIPFilters:    configFile.DIPFilters,
 		DomainFilters: configFile.DomainFilters,
+		PprofSwitch:   configFile.PprofSwitch,
 	}
 
 	// 命令行参数覆盖配置文件（命令行显式指定的优先）

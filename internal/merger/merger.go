@@ -13,7 +13,7 @@ import (
 )
 
 // MergeCSVFiles 合并目录下所有up/down/total CSV文件
-func MergeCSVFiles(dirPath string, fieldsStr string, topN int) error {
+func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds float64) error {
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		return fmt.Errorf("目录不存在: %s", dirPath)
 	}
@@ -48,21 +48,21 @@ func MergeCSVFiles(dirPath string, fieldsStr string, topN int) error {
 
 	if len(upFiles) > 0 {
 		fmt.Println("\n========== 合并 up 数据 ==========")
-		if err := mergeCSVFilesByType(upFiles, fieldList, "up", topN); err != nil {
+		if err := mergeCSVFilesByType(upFiles, fieldList, "up", topN, durationSeconds); err != nil {
 			return fmt.Errorf("合并up文件失败: %v", err)
 		}
 	}
 
 	if len(downFiles) > 0 {
 		fmt.Println("\n========== 合并 down 数据 ==========")
-		if err := mergeCSVFilesByType(downFiles, fieldList, "down", topN); err != nil {
+		if err := mergeCSVFilesByType(downFiles, fieldList, "down", topN, durationSeconds); err != nil {
 			return fmt.Errorf("合并down文件失败: %v", err)
 		}
 	}
 
 	if len(totalFiles) > 0 {
 		fmt.Println("\n========== 合并 total 数据 ==========")
-		if err := mergeCSVFilesByType(totalFiles, fieldList, "total", topN); err != nil {
+		if err := mergeCSVFilesByType(totalFiles, fieldList, "total", topN, durationSeconds); err != nil {
 			return fmt.Errorf("合并total文件失败: %v", err)
 		}
 	}
@@ -84,7 +84,7 @@ func classifyFiles(files []string) (upFiles, downFiles, totalFiles []string) {
 	return
 }
 
-func mergeCSVFilesByType(files []string, fieldList []string, sortType string, topN int) error {
+func mergeCSVFilesByType(files []string, fieldList []string, sortType string, topN int, durationSeconds float64) error {
 	aggregated := make(map[string]*models.CSVRecord)
 	filesProcessed := 0
 
@@ -204,13 +204,13 @@ func mergeCSVFilesByType(files []string, fieldList []string, sortType string, to
 	})
 
 	outputFile := fmt.Sprintf("merged_%s.csv", sortType)
-	if err := ExportMergedCSV(records, fieldList, outputFile, sortType); err != nil {
+	if err := ExportMergedCSV(records, fieldList, outputFile, sortType, durationSeconds); err != nil {
 		return fmt.Errorf("导出CSV失败: %v", err)
 	}
 
 	if len(fieldList) >= 2 {
 		fmt.Printf("  提取每个 %s 的 Top%d...\n", fieldList[0], topN)
-		if err := extractTopNPerKey(records, fieldList, sortType, topN); err != nil {
+		if err := extractTopNPerKey(records, fieldList, sortType, topN, durationSeconds); err != nil {
 			return fmt.Errorf("提取Top%d失败: %v", topN, err)
 		}
 	}
@@ -229,7 +229,7 @@ func parseInt64(record []string, fieldIndex map[string]int, fieldName string) in
 	return 0
 }
 
-func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType string, topN int) error {
+func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64) error {
 	if len(fieldList) < 2 {
 		return fmt.Errorf("至少需要2个字段才能提取TopN")
 	}
@@ -292,7 +292,7 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 	})
 
 	outputFile := fmt.Sprintf("top%d_%s.csv", topN, sortType)
-	if err := ExportMergedCSV(topNRecords, fieldList, outputFile, sortType); err != nil {
+	if err := ExportMergedCSV(topNRecords, fieldList, outputFile, sortType, durationSeconds); err != nil {
 		return fmt.Errorf("导出TopN CSV失败: %v", err)
 	}
 

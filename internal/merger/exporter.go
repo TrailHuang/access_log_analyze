@@ -8,7 +8,7 @@ import (
 )
 
 // ExportMergedCSV 导出合并后的CSV
-func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile string, sortType string) error {
+func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile string, sortType string, durationSeconds float64) error {
 	file, err := os.Create(outputFile)
 	if err != nil {
 		return fmt.Errorf("创建文件失败: %v", err)
@@ -24,7 +24,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 	// 写入表头
 	header := []string{"排名"}
 	header = append(header, fieldList...)
-	header = append(header, "上行流量(字节)", "上行流量", "下行流量(字节)", "下行流量", "总流量(字节)", "总流量", "流数")
+	header = append(header, "上行流量(字节)", "上行流量", "上行Mbps", "下行流量(字节)", "下行流量", "下行Mbps", "总流量(字节)", "总流量", "总Mbps", "流数")
 	writer.Write(header)
 
 	// 写入数据
@@ -39,7 +39,12 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		groupField = fieldList[0]
 	}
 
-	groupRank := make(map[string]int) // 记录每个分组的当前排名
+	groupRank := make(map[string]int)        // 记录每个分组的当前排名
+	groupUpTotal := make(map[string]int64)   // 记录每个分组的上行总字节
+	groupDownTotal := make(map[string]int64) // 记录每个分组的下行总字节
+	groupFlowTotal := make(map[string]int64) // 记录每个分组的总流数
+
+	var lastGroupKey string // 记录上一个分组的key
 
 	for _, record := range records {
 		// 获取分组key（第一个字段的值）
@@ -48,9 +53,51 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			groupKey = record.Fields[groupField]
 		}
 
+		// 检测到新的分组，写入上一个分组的汇总行
+		if lastGroupKey != "" && groupKey != lastGroupKey {
+			// 计算上一个分组的Mbps
+			lastUpMbps := float64(groupUpTotal[lastGroupKey]*8) / durationSeconds / 1000000
+			lastDownMbps := float64(groupDownTotal[lastGroupKey]*8) / durationSeconds / 1000000
+			lastTotalMbps := float64(groupFlowTotal[lastGroupKey]*8) / durationSeconds / 1000000
+
+			summaryRow := []string{"汇总"}
+			// 填充字段列（第一个字段显示IP，其他留空）
+			for i := 0; i < len(fieldList); i++ {
+				if i == 0 {
+					summaryRow = append(summaryRow, lastGroupKey)
+				} else {
+					summaryRow = append(summaryRow, "")
+				}
+			}
+			summaryRow = append(summaryRow,
+				fmt.Sprintf("%d", groupUpTotal[lastGroupKey]),
+				FormatBytes(groupUpTotal[lastGroupKey]),
+				fmt.Sprintf("%.2f", lastUpMbps),
+				fmt.Sprintf("%d", groupDownTotal[lastGroupKey]),
+				FormatBytes(groupDownTotal[lastGroupKey]),
+				fmt.Sprintf("%.2f", lastDownMbps),
+				fmt.Sprintf("%d", groupFlowTotal[lastGroupKey]),
+				FormatBytes(groupFlowTotal[lastGroupKey]),
+				fmt.Sprintf("%.2f", lastTotalMbps),
+				"",
+			)
+			writer.Write(summaryRow)
+
+			// 清空累加器，为新分组做准备
+			delete(groupRank, lastGroupKey)
+			delete(groupUpTotal, lastGroupKey)
+			delete(groupDownTotal, lastGroupKey)
+			delete(groupFlowTotal, lastGroupKey)
+		}
+
 		// 计算该分组内的排名
 		groupRank[groupKey]++
 		rank := groupRank[groupKey]
+
+		// 计算Mbps (bits per second / 1,000,000)
+		upMbps := float64(record.UpTotal*8) / durationSeconds / 1000000
+		downMbps := float64(record.DownTotal*8) / durationSeconds / 1000000
+		totalMbps := float64(record.FlowTotal*8) / durationSeconds / 1000000
 
 		row := []string{fmt.Sprintf("%d", rank)}
 		for _, field := range fieldList {
@@ -59,21 +106,65 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		row = append(row,
 			fmt.Sprintf("%d", record.UpTotal),
 			FormatBytes(record.UpTotal),
+			fmt.Sprintf("%.2f", upMbps),
 			fmt.Sprintf("%d", record.DownTotal),
 			FormatBytes(record.DownTotal),
+			fmt.Sprintf("%.2f", downMbps),
 			fmt.Sprintf("%d", record.FlowTotal),
 			FormatBytes(record.FlowTotal),
+			fmt.Sprintf("%.2f", totalMbps),
 			fmt.Sprintf("%d", record.FlowCount),
 		)
 		writer.Write(row)
+
+		// 累加分组统计
+		groupUpTotal[groupKey] += record.UpTotal
+		groupDownTotal[groupKey] += record.DownTotal
+		groupFlowTotal[groupKey] += record.FlowCount
 
 		totalUp += record.UpTotal
 		totalDown += record.DownTotal
 		totalFlow += record.FlowTotal
 		totalFlowCount += record.FlowCount
+
+		// 更新上一个分组key
+		lastGroupKey = groupKey
+	}
+
+	// 写入最后一个分组的汇总行
+	if lastGroupKey != "" {
+		lastUpMbps := float64(groupUpTotal[lastGroupKey]*8) / durationSeconds / 1000000
+		lastDownMbps := float64(groupDownTotal[lastGroupKey]*8) / durationSeconds / 1000000
+		lastTotalMbps := float64(groupFlowTotal[lastGroupKey]*8) / durationSeconds / 1000000
+
+		summaryRow := []string{"汇总"}
+		for i := 0; i < len(fieldList); i++ {
+			if i == 0 {
+				summaryRow = append(summaryRow, lastGroupKey)
+			} else {
+				summaryRow = append(summaryRow, "")
+			}
+		}
+		summaryRow = append(summaryRow,
+			fmt.Sprintf("%d", groupUpTotal[lastGroupKey]),
+			FormatBytes(groupUpTotal[lastGroupKey]),
+			fmt.Sprintf("%.2f", lastUpMbps),
+			fmt.Sprintf("%d", groupDownTotal[lastGroupKey]),
+			FormatBytes(groupDownTotal[lastGroupKey]),
+			fmt.Sprintf("%.2f", lastDownMbps),
+			fmt.Sprintf("%d", groupFlowTotal[lastGroupKey]),
+			FormatBytes(groupFlowTotal[lastGroupKey]),
+			fmt.Sprintf("%.2f", lastTotalMbps),
+			"",
+		)
+		writer.Write(summaryRow)
 	}
 
 	// 写入总计行
+	totalUpMbps := float64(totalUp*8) / durationSeconds / 1000000
+	totalDownMbps := float64(totalDown*8) / durationSeconds / 1000000
+	totalFlowMbps := float64(totalFlow*8) / durationSeconds / 1000000
+
 	totalRow := []string{"总计"}
 	for i := 0; i < len(fieldList); i++ {
 		totalRow = append(totalRow, "")
@@ -81,10 +172,13 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 	totalRow = append(totalRow,
 		fmt.Sprintf("%d", totalUp),
 		FormatBytes(totalUp),
+		fmt.Sprintf("%.2f", totalUpMbps),
 		fmt.Sprintf("%d", totalDown),
 		FormatBytes(totalDown),
+		fmt.Sprintf("%.2f", totalDownMbps),
 		fmt.Sprintf("%d", totalFlow),
 		FormatBytes(totalFlow),
+		fmt.Sprintf("%.2f", totalFlowMbps),
 		fmt.Sprintf("%d", totalFlowCount),
 	)
 	writer.Write(totalRow)
