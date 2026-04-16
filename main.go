@@ -120,7 +120,7 @@ func main() {
 	sortBy := flag.String("sort", "up", "排序方式: up(上行流量), down(下行流量), total(总流量)")
 	csvTop := flag.Int("csv_top", 1000, "CSV文件导出最大行数(默认1000, 0表示全部)")
 	workers := flag.Int("workers", 4, "并发协程数(默认4)")
-	batchSize := flag.Int("batch_size", 100, "每批处理的文件数量(默认100)")
+	batchSize := flag.Int("batch_size", 0, "每批处理的文件数量后生成临时CSV(默认0表示不生成)")
 	output := flag.String("output", "", "输出CSV文件名(默认自动生成)")
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 
@@ -307,7 +307,7 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 				}
 
 				// 检查是否达到batchSize，如果是则生成临时CSV（不重置统计，继续累积）
-				if fileCount%batchSize == 0 {
+				if batchSize > 0 && fileCount%batchSize == 0 {
 					generateTempCSV(localStats, fieldIndexes, outputBaseName, workerID, fileCount)
 				}
 
@@ -315,9 +315,12 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 				resultCh <- result{stats: nil, err: err}
 			}
 
-			// 处理完成后，生成最终CSV并发送完整的统计结果
+			// 处理完成后，发送完整的统计结果
 			if len(localStats) > 0 {
-				generateTempCSV(localStats, fieldIndexes, outputBaseName, workerID, fileCount)
+				// 如果启用了batch_size，生成最终CSV
+				if batchSize > 0 {
+					generateTempCSV(localStats, fieldIndexes, outputBaseName, workerID, fileCount)
+				}
 
 				// 创建localStats的副本用于发送，避免并发访问问题
 				statsCopy := make(map[string]*TrafficStats, len(localStats))
