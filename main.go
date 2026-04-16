@@ -120,6 +120,7 @@ func main() {
 	sortBy := flag.String("sort", "up", "排序方式: up(上行流量), down(下行流量), total(总流量)")
 	csvTop := flag.Int("csv_top", 1000, "CSV文件导出最大行数(默认1000, 0表示全部)")
 	workers := flag.Int("workers", 4, "并发协程数(默认4)")
+	batchSize := flag.Int("batch_size", 100, "每批处理的文件数量(默认100)")
 	output := flag.String("output", "", "输出CSV文件名(默认自动生成)")
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 
@@ -243,14 +244,14 @@ func main() {
 	fmt.Printf("找到 %d 个tar.gz文件\n", len(tarGzFiles))
 
 	// 并发处理文件
-	statsMap := processFilesConcurrent(tarGzFiles, fieldIndexes, filters, *workers)
+	statsMap := processFilesConcurrent(tarGzFiles, fieldIndexes, filters, *workers, *batchSize, *output)
 
 	// 输出统计结果
 	printResults(statsMap, fieldIndexes, *topN, *sortBy, *csvTop, *output)
 }
 
 // processFilesConcurrent 并发处理多个tar.gz文件
-func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters *LogFilters, numWorkers int) map[string]*TrafficStats {
+func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters *LogFilters, numWorkers int, batchSize int, outputBaseName string) map[string]*TrafficStats {
 	// 限制最大协程数不超过文件数
 	if numWorkers > len(files) {
 		numWorkers = len(files)
@@ -260,7 +261,7 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 		return make(map[string]*TrafficStats)
 	}
 
-	fmt.Printf("使用 %d 个协程并发处理\n", numWorkers)
+	fmt.Printf("使用 %d 个协程并发处理，每 %d 个文件生成一次临时CSV\n", numWorkers, batchSize)
 
 	// 创建任务通道
 	taskCh := make(chan string, len(files))
@@ -283,13 +284,16 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 		go func(workerID int) {
 			defer wg.Done()
 
+			// 每个协程独立累积统计
+			localStats := make(map[string]*TrafficStats)
+			fileCount := 0
+
 			for filePath := range taskCh {
+				fileCount++
+
 				// 记录单文件处理时间
 				fileStart := time.Now()
 				fileName := filepath.Base(filePath)
-
-				// 每个协程独立统计
-				localStats := make(map[string]*TrafficStats)
 
 				err := processTarGz(filePath, localStats, fieldIndexes, filters)
 
@@ -302,8 +306,37 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 					fmt.Printf("  [Worker %d] ✓ %s 处理完成 (%.2fs)\n", workerID, fileName, fileDuration.Seconds())
 				}
 
-				// 发送结果
-				resultCh <- result{stats: localStats, err: err}
+				// 检查是否达到batchSize，如果是则生成临时CSV（不重置统计，继续累积）
+				if fileCount%batchSize == 0 {
+					generateTempCSV(localStats, fieldIndexes, outputBaseName, workerID, fileCount)
+				}
+
+				// 发送结果（仅用于进度显示，不传递统计数据避免并发问题）
+				resultCh <- result{stats: nil, err: err}
+			}
+
+			// 处理完成后，生成最终CSV并发送完整的统计结果
+			if len(localStats) > 0 {
+				generateTempCSV(localStats, fieldIndexes, outputBaseName, workerID, fileCount)
+
+				// 创建localStats的副本用于发送，避免并发访问问题
+				statsCopy := make(map[string]*TrafficStats, len(localStats))
+				for key, stats := range localStats {
+					// 创建TrafficStats的副本
+					fieldValuesCopy := make(map[string]string, len(stats.Fields))
+					for k, v := range stats.Fields {
+						fieldValuesCopy[k] = v
+					}
+					statsCopy[key] = &TrafficStats{
+						Key:       stats.Key,
+						Fields:    fieldValuesCopy,
+						UpTotal:   stats.UpTotal,
+						DownTotal: stats.DownTotal,
+					}
+				}
+
+				// 发送最终统计结果副本
+				resultCh <- result{stats: statsCopy, err: nil}
 			}
 		}(i)
 	}
@@ -352,6 +385,95 @@ func mergeStats(dst, src map[string]*TrafficStats) {
 			}
 		}
 	}
+}
+
+// generateTempCSV 生成临时CSV文件
+func generateTempCSV(statsMap map[string]*TrafficStats, fieldIndexes map[string]int, outputBaseName string, workerID int, fileCount int) {
+	if len(statsMap) == 0 {
+		return
+	}
+
+	// 生成临时文件名：test_worker0_1-100.csv, test_worker0_1-200.csv, ...
+	var tempFileName string
+	if outputBaseName == "" {
+		tempFileName = fmt.Sprintf("traffic_stats_worker%d_1-%d.csv", workerID, fileCount)
+	} else {
+		// 去除扩展名，添加后缀
+		baseName := strings.TrimSuffix(outputBaseName, filepath.Ext(outputBaseName))
+		ext := filepath.Ext(outputBaseName)
+		if ext == "" {
+			ext = ".csv"
+		}
+		tempFileName = fmt.Sprintf("%s_worker%d_1-%d%s", baseName, workerID, fileCount, ext)
+	}
+
+	// 转换为切片以便排序
+	statsList := make([]*TrafficStats, 0, len(statsMap))
+	for _, stats := range statsMap {
+		statsList = append(statsList, stats)
+	}
+
+	// 按总流量降序排序
+	sort.Slice(statsList, func(i, j int) bool {
+		return (statsList[i].UpTotal + statsList[i].DownTotal) > (statsList[j].UpTotal + statsList[j].DownTotal)
+	})
+
+	// 按字段索引排序，保证输出顺序一致
+	type fieldPair struct {
+		name string
+		idx  int
+	}
+	sortedFields := make([]fieldPair, 0, len(fieldIndexes))
+	for name, idx := range fieldIndexes {
+		sortedFields = append(sortedFields, fieldPair{name, idx})
+	}
+	sort.Slice(sortedFields, func(i, j int) bool {
+		return sortedFields[i].idx < sortedFields[j].idx
+	})
+
+	// 导出CSV
+	file, err := os.Create(tempFileName)
+	if err != nil {
+		fmt.Printf("\n  [Worker %d] 错误: 创建临时CSV文件失败 %s: %v\n", workerID, tempFileName, err)
+		return
+	}
+	defer file.Close()
+
+	// 写入BOM标记,使Excel能正确识别UTF-8
+	file.WriteString("\xEF\xBB\xBF")
+
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	// 写入表头
+	writer.WriteString("排名")
+	for _, fp := range sortedFields {
+		writer.WriteString("," + fp.name)
+	}
+	writer.WriteString(",上行流量(字节),下行流量(字节),总流量(字节),上行流量,下行流量,总流量\n")
+
+	// 写入数据
+	for i, stats := range statsList {
+		writer.WriteString(fmt.Sprintf("%d", i+1))
+		for _, fp := range sortedFields {
+			// 处理包含逗号的字段值,用引号包裹
+			value := stats.Fields[fp.name]
+			if strings.Contains(value, ",") || strings.Contains(value, "\"") {
+				value = "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
+			}
+			writer.WriteString("," + value)
+		}
+		writer.WriteString(fmt.Sprintf(",%d,%d,%d,%s,%s,%s\n",
+			stats.UpTotal,
+			stats.DownTotal,
+			stats.UpTotal+stats.DownTotal,
+			formatBytes(stats.UpTotal),
+			formatBytes(stats.DownTotal),
+			formatBytes(stats.UpTotal+stats.DownTotal),
+		))
+	}
+
+	fmt.Printf("  [Worker %d] ✓ 临时CSV已生成: %s (已处理 %d 个文件, %d 条记录)\n", workerID, tempFileName, fileCount, len(statsList))
 }
 
 // parseFieldNames 解析字段名到索引的映射
@@ -675,10 +797,23 @@ func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int
 		displayCount = len(statsList)
 	}
 
+	// 按字段索引排序，保证输出顺序一致
+	type fieldPair struct {
+		name string
+		idx  int
+	}
+	sortedFields := make([]fieldPair, 0, len(fieldIndexes))
+	for name, idx := range fieldIndexes {
+		sortedFields = append(sortedFields, fieldPair{name, idx})
+	}
+	sort.Slice(sortedFields, func(i, j int) bool {
+		return sortedFields[i].idx < sortedFields[j].idx
+	})
+
 	// 创建表格
 	headers := []string{"排名"}
-	for fieldName := range fieldIndexes {
-		headers = append(headers, fieldName)
+	for _, fp := range sortedFields {
+		headers = append(headers, fp.name)
 	}
 	headers = append(headers, "上行流量\n(字节)", "上行流量\n", "下行流量\n(字节)", "下行流量\n", "总流量\n(字节)", "总流量\n")
 
@@ -701,8 +836,8 @@ func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int
 		stats := statsList[i]
 
 		row := []string{fmt.Sprintf("%d", i+1)}
-		for fieldName := range fieldIndexes {
-			row = append(row, stats.Fields[fieldName])
+		for _, fp := range sortedFields {
+			row = append(row, stats.Fields[fp.name])
 		}
 
 		totalBytes := stats.UpTotal + stats.DownTotal
@@ -809,10 +944,23 @@ func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, csvTop 
 	writer := bufio.NewWriter(file)
 	defer writer.Flush()
 
+	// 按字段索引排序，保证输出顺序一致
+	type fieldPair struct {
+		name string
+		idx  int
+	}
+	sortedFields := make([]fieldPair, 0, len(fieldIndexes))
+	for name, idx := range fieldIndexes {
+		sortedFields = append(sortedFields, fieldPair{name, idx})
+	}
+	sort.Slice(sortedFields, func(i, j int) bool {
+		return sortedFields[i].idx < sortedFields[j].idx
+	})
+
 	// 写入表头
 	writer.WriteString("排名")
-	for fieldName := range fieldIndexes {
-		writer.WriteString("," + fieldName)
+	for _, fp := range sortedFields {
+		writer.WriteString("," + fp.name)
 	}
 	writer.WriteString(",上行流量(字节),下行流量(字节),总流量(字节),上行流量,下行流量,总流量\n")
 
@@ -826,9 +974,9 @@ func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, csvTop 
 	for i := 0; i < exportCount; i++ {
 		stats := statsList[i]
 		writer.WriteString(fmt.Sprintf("%d", i+1))
-		for fieldName := range fieldIndexes {
+		for _, fp := range sortedFields {
 			// 处理包含逗号的字段值,用引号包裹
-			value := stats.Fields[fieldName]
+			value := stats.Fields[fp.name]
 			if strings.Contains(value, ",") || strings.Contains(value, "\"") {
 				value = "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
 			}
