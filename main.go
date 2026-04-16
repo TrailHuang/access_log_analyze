@@ -4,13 +4,13 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
-	"encoding/csv"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,6 +106,25 @@ func main() {
 
 	flag.Parse()
 
+	// 性能分析: CPU profile
+	cpuProfile, err := os.Create("cpu_profile.prof")
+	if err != nil {
+		fmt.Printf("创建CPU profile文件失败: %v\n", err)
+		return
+	}
+	pprof.StartCPUProfile(cpuProfile)
+	defer pprof.StopCPUProfile()
+
+	// 性能分析: 内存 profile
+	defer func() {
+		memProfile, err := os.Create("mem_profile.prof")
+		if err != nil {
+			fmt.Printf("创建内存profile文件失败: %v\n", err)
+			return
+		}
+		pprof.WriteHeapProfile(memProfile)
+		memProfile.Close()
+	}()
 	// 验证排序参数
 	if *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
 		fmt.Printf("错误: 无效的排序方式: %s (支持: up, down, total)\n", *sortBy)
@@ -240,13 +259,22 @@ func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 			defer wg.Done()
 
 			for filePath := range taskCh {
+				// 记录单文件处理时间
+				fileStart := time.Now()
+				fileName := filepath.Base(filePath)
+
 				// 每个协程独立统计
 				localStats := make(map[string]*TrafficStats)
 
 				err := processTarGz(filePath, localStats, fieldIndexes, filters)
+
+				// 计算处理时间
+				fileDuration := time.Since(fileStart)
+
 				if err != nil {
-					fileName := filepath.Base(filePath)
-					fmt.Printf("  [Worker %d] 警告: 处理文件 %s 时出错: %v\n", workerID, fileName, err)
+					fmt.Printf("  [Worker %d] 警告: 处理文件 %s 时出错: %v (%.2fs)\n", workerID, fileName, err, fileDuration.Seconds())
+				} else {
+					fmt.Printf("  [Worker %d] ✓ %s 处理完成 (%.2fs)\n", workerID, fileName, fileDuration.Seconds())
 				}
 
 				// 发送结果
@@ -396,6 +424,20 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 	// 增加buffer大小以处理长行
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
+	// 优化2: 字段排序只做一次 - 在循环外预排序字段
+	type fieldPair struct {
+		name string
+		idx  int
+	}
+	sortedFields := make([]fieldPair, 0, len(fieldIndexes))
+	for name, idx := range fieldIndexes {
+		sortedFields = append(sortedFields, fieldPair{name, idx})
+	}
+	// 按索引排序
+	sort.Slice(sortedFields, func(i, j int) bool {
+		return sortedFields[i].idx < sortedFields[j].idx
+	})
+
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -406,16 +448,9 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 			continue
 		}
 
-		// 解析CSV格式的数据(使用|作为分隔符)
-		csvReader := csv.NewReader(strings.NewReader(line))
-		csvReader.Comma = '|'
-		csvReader.FieldsPerRecord = -1 // 允许字段数不固定
-
-		fields, err := csvReader.Read()
-		if err != nil {
-			fmt.Printf("  警告: 解析第 %d 行失败: %v\n", lineNum, err)
-			continue
-		}
+		// 优化1: 使用strings.Split替代csv.Reader，避免每行创建新对象
+		// 日志格式使用|作为分隔符，没有引号转义，可以直接用Split
+		fields := strings.Split(line, "|")
 
 		// 日志格式: HouseId|源IP|目的IP|协议类型|源端口|目的端口|域名|URL|Duration|UTC时间|Title|应用层协议|业务层协议|Referer|Location|网站内容|访问数据量|上行流量|下行流量|应用名称
 		// 字段索引: 0       1     2      3       4      5      6    7   8        9        10    11         12         13      14       15       16        17      18      19
@@ -430,20 +465,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 		keyParts := make([]string, 0, len(fieldIndexes))
 		fieldValues := make(map[string]string)
 
-		// 按固定顺序提取统计字段(避免map遍历顺序随机导致key不一致)
-		// 先按fieldIdx排序,确保顺序固定
-		type fieldPair struct {
-			name string
-			idx  int
-		}
-		sortedFields := make([]fieldPair, 0, len(fieldIndexes))
-		for name, idx := range fieldIndexes {
-			sortedFields = append(sortedFields, fieldPair{name, idx})
-		}
-		// 按索引排序
-		sort.Slice(sortedFields, func(i, j int) bool {
-			return sortedFields[i].idx < sortedFields[j].idx
-		})
+		// 按预排序后的顺序提取字段
 
 		// 按排序后的顺序提取
 		for _, fp := range sortedFields {
