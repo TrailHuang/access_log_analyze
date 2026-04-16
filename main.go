@@ -11,12 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/olekukonko/tablewriter"
 )
 
 // LogFilters 日志过滤器
@@ -93,6 +94,8 @@ func main() {
 	fields := flag.String("fields", "dip,domain", "统计字段,用逗号分隔。支持的字段: house_id, sip, dip, proto, sport, dport, domain, url, duration, utc_time, title, app_proto, biz_proto, referer, location, content, data_size, up_traffic, down_traffic, app_name")
 	topN := flag.Int("top", 10, "显示Top N条记录")
 	sortBy := flag.String("sort", "up", "排序方式: up(上行流量), down(下行流量), total(总流量)")
+	csvTop := flag.Int("csv_top", 1000, "CSV文件导出最大行数(默认1000, 0表示全部)")
+	workers := flag.Int("workers", 4, "并发协程数(默认4)")
 	output := flag.String("output", "", "输出CSV文件名(默认自动生成)")
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 
@@ -106,6 +109,12 @@ func main() {
 	// 验证排序参数
 	if *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
 		fmt.Printf("错误: 无效的排序方式: %s (支持: up, down, total)\n", *sortBy)
+		os.Exit(1)
+	}
+
+	// 验证协程数
+	if *workers <= 0 {
+		fmt.Printf("错误: 协程数必须大于0\n")
 		os.Exit(1)
 	}
 
@@ -147,6 +156,7 @@ func main() {
 
 	sortLabel := map[string]string{"up": "上行流量", "down": "下行流量", "total": "总流量"}
 	fmt.Printf("排序方式: %s\n", sortLabel[*sortBy])
+	fmt.Printf("并发协程: %d\n", *workers)
 	if filters.HasFilters() {
 		fmt.Printf("过滤条件:\n")
 		if len(filters.SIPFilters) > 0 {
@@ -189,16 +199,15 @@ func main() {
 	fmt.Printf("找到 %d 个tar.gz文件\n", len(tarGzFiles))
 
 	// 并发处理文件
-	statsMap := processFilesConcurrent(tarGzFiles, fieldIndexes, filters)
+	statsMap := processFilesConcurrent(tarGzFiles, fieldIndexes, filters, *workers)
 
 	// 输出统计结果
-	printResults(statsMap, fieldIndexes, *topN, *sortBy, *output)
+	printResults(statsMap, fieldIndexes, *topN, *sortBy, *csvTop, *output)
 }
 
 // processFilesConcurrent 并发处理多个tar.gz文件
-func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters *LogFilters) map[string]*TrafficStats {
-	// 使用CPU核心数作为协程数
-	numWorkers := runtime.NumCPU()
+func processFilesConcurrent(files []string, fieldIndexes map[string]int, filters *LogFilters, numWorkers int) map[string]*TrafficStats {
+	// 限制最大协程数不超过文件数
 	if numWorkers > len(files) {
 		numWorkers = len(files)
 	}
@@ -543,7 +552,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 }
 
 // printResults 输出统计结果
-func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int, topN int, sortBy string, outputFile string) {
+func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int, topN int, sortBy string, csvTop int, outputFile string) {
 
 	// 转换为切片以便排序
 	statsList := make([]*TrafficStats, 0, len(statsMap))
@@ -569,29 +578,23 @@ func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int
 		displayCount = len(statsList)
 	}
 
-	// 输出表头
-	fmt.Println("\n========== 流量统计结果 ==========")
-	fmt.Printf("总计: %d 个唯一组合\n", len(statsMap))
-	fmt.Printf("显示: Top %d\n\n", displayCount)
-
-	// 动态生成表头
-	headerFmt := "%-5s"
-	headerArgs := []interface{}{"排名"}
-
-	// 添加字段列
+	// 创建表格
+	headers := []string{"排名"}
 	for fieldName := range fieldIndexes {
-		headerFmt += " | %-25s"
-		headerArgs = append(headerArgs, fieldName)
+		headers = append(headers, fieldName)
 	}
+	headers = append(headers, "上行流量\n(字节)", "上行流量\n", "下行流量\n(字节)", "下行流量\n", "总流量\n(字节)", "总流量\n")
 
-	headerFmt += " | %15s | %15s | %15s\n"
-	headerArgs = append(headerArgs, "上行流量(字节)", "下行流量(字节)", "总流量(字节)")
-
-	fmt.Printf(headerFmt, headerArgs...)
-
-	// 计算分隔线长度
-	sepLen := 5 + (len(fieldIndexes) * 27) + 48
-	fmt.Println(strings.Repeat("-", sepLen))
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader(headers)
+	table.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+	table.SetCenterSeparator("|")
+	table.SetColumnSeparator("|")
+	table.SetRowSeparator("-")
+	table.SetHeaderAlignment(tablewriter.ALIGN_CENTER)
+	table.SetAlignment(tablewriter.ALIGN_LEFT)
+	table.SetHeaderLine(true)
+	table.SetAutoWrapText(false)
 
 	// 输出数据
 	totalUp := int64(0)
@@ -600,31 +603,49 @@ func printResults(statsMap map[string]*TrafficStats, fieldIndexes map[string]int
 	for i := 0; i < displayCount; i++ {
 		stats := statsList[i]
 
-		// 构建格式化字符串和参数
-		rowFmt := "%-5d"
-		rowArgs := []interface{}{i + 1}
-
+		row := []string{fmt.Sprintf("%d", i+1)}
 		for fieldName := range fieldIndexes {
-			rowFmt += " | %-25s"
-			rowArgs = append(rowArgs, stats.Fields[fieldName])
+			row = append(row, stats.Fields[fieldName])
 		}
 
-		rowFmt += " | %15d | %15d | %15d\n"
-		rowArgs = append(rowArgs, stats.UpTotal, stats.DownTotal, stats.UpTotal+stats.DownTotal)
+		totalBytes := stats.UpTotal + stats.DownTotal
+		row = append(row,
+			fmt.Sprintf("%d", stats.UpTotal),
+			formatBytes(stats.UpTotal),
+			fmt.Sprintf("%d", stats.DownTotal),
+			formatBytes(stats.DownTotal),
+			fmt.Sprintf("%d", totalBytes),
+			formatBytes(totalBytes),
+		)
 
-		fmt.Printf(rowFmt, rowArgs...)
+		table.Append(row)
 		totalUp += stats.UpTotal
 		totalDown += stats.DownTotal
 	}
 
-	fmt.Println(strings.Repeat("-", sepLen))
-	fmt.Printf("Top %d 总计: 上行流量=%d 字节, 下行流量=%d 字节, 总流量=%d 字节\n",
-		displayCount, totalUp, totalDown, totalUp+totalDown)
-	fmt.Printf("             上行流量=%s, 下行流量=%s, 总流量=%s\n",
-		formatBytes(totalUp), formatBytes(totalDown), formatBytes(totalUp+totalDown))
+	// 添加总计行
+	totalAll := totalUp + totalDown
+	totalRow := []string{"总计"}
+	for i := 0; i < len(fieldIndexes); i++ {
+		totalRow = append(totalRow, "")
+	}
+	totalRow = append(totalRow,
+		fmt.Sprintf("%d", totalUp),
+		formatBytes(totalUp),
+		fmt.Sprintf("%d", totalDown),
+		formatBytes(totalDown),
+		fmt.Sprintf("%d", totalAll),
+		formatBytes(totalAll),
+	)
+	table.Append(totalRow)
+
+	// 渲染表格
+	fmt.Println()
+	table.Render()
+	fmt.Printf("\n共 %d 个唯一组合, 显示 Top %d\n", len(statsMap), displayCount)
 
 	// 导出CSV
-	exportToCSV(statsList, fieldIndexes, outputFile)
+	exportToCSV(statsList, fieldIndexes, csvTop, outputFile)
 }
 
 // printHelp 打印帮助信息
@@ -671,7 +692,7 @@ func printHelp() {
 }
 
 // exportToCSV 导出完整的统计结果到CSV文件
-func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, outputFile string) {
+func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, csvTop int, outputFile string) {
 	// 生成文件名
 	if outputFile == "" {
 		timestamp := time.Now().Format("20060102_150405")
@@ -698,8 +719,15 @@ func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, outputF
 	}
 	writer.WriteString(",上行流量(字节),下行流量(字节),总流量(字节),上行流量,下行流量,总流量\n")
 
-	// 写入数据(全部数据,不仅仅是Top N)
-	for i, stats := range statsList {
+	// 确定导出行数
+	exportCount := len(statsList)
+	if csvTop > 0 && csvTop < exportCount {
+		exportCount = csvTop
+	}
+
+	// 写入数据(限制行数)
+	for i := 0; i < exportCount; i++ {
+		stats := statsList[i]
 		writer.WriteString(fmt.Sprintf("%d", i+1))
 		for fieldName := range fieldIndexes {
 			// 处理包含逗号的字段值,用引号包裹
@@ -719,7 +747,11 @@ func exportToCSV(statsList []*TrafficStats, fieldIndexes map[string]int, outputF
 		))
 	}
 
-	fmt.Printf("\n✓ CSV文件已导出: %s (共 %d 条记录)\n", outputFile, len(statsList))
+	fmt.Printf("\n✓ CSV文件已导出: %s (共 %d 条记录)", outputFile, exportCount)
+	if csvTop > 0 && len(statsList) > csvTop {
+		fmt.Printf(", 总计 %d 条, 已限制为前 %d 条", len(statsList), csvTop)
+	}
+	fmt.Println()
 }
 
 // formatBytes 将字节数格式化为人类可读的形式
