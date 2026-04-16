@@ -19,7 +19,7 @@ LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X 
 
 # 默认目标
 .PHONY: all
-all: build
+all: build package
 
 # 构建 Linux x86_64 二进制文件
 .PHONY: build
@@ -28,6 +28,16 @@ build:
 	@mkdir -p build
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME) main.go
 	@echo "==> 构建完成: build/$(BINARY_NAME)"
+
+# 打包二进制和配置文件
+.PHONY: package
+package: build
+	@echo "==> 打包 $(BINARY_NAME) 和 config.json..."
+	@mkdir -p access_log_analyzer_release	
+	@cp build/$(BINARY_NAME) access_log_analyzer_release/
+	@cp config.json access_log_analyzer_release/
+	@tar -czf $(BINARY_NAME)_$(VERSION).tar.gz access_log_analyzer_release 
+	@echo "==> 打包完成: $(BINARY_NAME)_$(VERSION).tar.gz"
 
 # 清理构建文件
 .PHONY: clean
@@ -78,7 +88,9 @@ version:
 .PHONY: help
 help:
 	@echo "可用目标:"
-	@echo "  all/build   - 构建 Linux x86_64 二进制文件 (默认)"
+	@echo "  all/build   - 构建并打包 (默认)"
+	@echo "  build       - 仅构建 Linux x86_64 二进制文件"
+	@echo "  package     - 打包二进制文件和config.json为tar.gz"
 	@echo "  clean       - 清理构建文件"
 	@echo "  run         - 构建并运行程序 (使用 ARGS 参数)"
 	@echo "  test        - 运行测试"
@@ -89,8 +101,9 @@ help:
 	@echo "  help        - 显示此帮助信息"
 	@echo ""
 	@echo "示例:"
-	@echo "  make                          # 构建"
-	@echo "  make build                    # 构建"
+	@echo "  make                          # 构建并打包"
+	@echo "  make build                    # 仅构建"
+	@echo "  make package                  # 打包"
 	@echo "  make clean                    # 清理"
 	@echo "  make run ARGS=/path/to/logs   # 运行并指定目录"
 	@echo "  make version VERSION=2.0.0    # 指定版本号"
