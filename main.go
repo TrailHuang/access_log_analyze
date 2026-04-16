@@ -27,6 +27,30 @@ type LogFilters struct {
 	DomainFilters []string
 }
 
+// Pool 对象池配置
+var (
+	// fieldValuesPool 复用 map[string]string，预分配容量30
+	fieldValuesPool = sync.Pool{
+		New: func() interface{} {
+			return make(map[string]string, 30)
+		},
+	}
+
+	// keyPartsPool 复用 []string，预分配容量20
+	keyPartsPool = sync.Pool{
+		New: func() interface{} {
+			return make([]string, 0, 20)
+		},
+	}
+
+	// keyBuilderPool 复用 strings.Builder 用于构建key
+	keyBuilderPool = sync.Pool{
+		New: func() interface{} {
+			return &strings.Builder{}
+		},
+	}
+)
+
 // HasFilters 检查是否有过滤条件
 func (f *LogFilters) HasFilters() bool {
 	return len(f.SIPFilters) > 0 || len(f.DIPFilters) > 0 || len(f.DomainFilters) > 0
@@ -125,6 +149,7 @@ func main() {
 		pprof.WriteHeapProfile(memProfile)
 		memProfile.Close()
 	}()
+
 	// 验证排序参数
 	if *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
 		fmt.Printf("错误: 无效的排序方式: %s (支持: up, down, total)\n", *sortBy)
@@ -461,11 +486,16 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 			continue
 		}
 
-		// 构建统计key和字段值映射
-		keyParts := make([]string, 0, len(fieldIndexes))
-		fieldValues := make(map[string]string)
+		// 优化3: 使用sync.Pool复用对象，减少GC压力
+		// 从Pool获取对象
+		keyParts := keyPartsPool.Get().([]string)
+		keyParts = keyParts[:0] // 重置长度，保留容量
 
-		// 按预排序后的顺序提取字段
+		fieldValues := fieldValuesPool.Get().(map[string]string)
+		// 清空map - 遍历delete方式
+		for k := range fieldValues {
+			delete(fieldValues, k)
+		}
 
 		// 按排序后的顺序提取
 		for _, fp := range sortedFields {
@@ -516,7 +546,31 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 			fieldValues["down_traffic"] = value
 		}
 
-		key := strings.Join(keyParts, "|")
+		// 优化4: 使用strings.Builder复用对象构建key，减少分配
+		keyBuilder := keyBuilderPool.Get().(*strings.Builder)
+		keyBuilder.Reset()
+
+		// 预计算key长度并预分配容量
+		totalLen := 0
+		for i, part := range keyParts {
+			totalLen += len(part)
+			if i < len(keyParts)-1 {
+				totalLen++ // 分隔符 |
+			}
+		}
+		keyBuilder.Grow(totalLen)
+
+		// 构建key
+		for i, part := range keyParts {
+			if i > 0 {
+				keyBuilder.WriteByte('|')
+			}
+			keyBuilder.WriteString(part)
+		}
+		key := keyBuilder.String()
+
+		// 将builder放回Pool
+		keyBuilderPool.Put(keyBuilder)
 
 		// 应用过滤条件
 		sip := fieldValues["sip"]
@@ -524,12 +578,21 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 		domain := fieldValues["domain"]
 
 		if !MatchFilter(sip, filters.SIPFilters) {
+			// 过滤不匹配，归还Pool对象
+			keyPartsPool.Put(keyParts)
+			fieldValuesPool.Put(fieldValues)
 			continue
 		}
 		if !MatchFilter(dip, filters.DIPFilters) {
+			// 过滤不匹配，归还Pool对象
+			keyPartsPool.Put(keyParts)
+			fieldValuesPool.Put(fieldValues)
 			continue
 		}
 		if !MatchFilter(domain, filters.DomainFilters) {
+			// 过滤不匹配，归还Pool对象
+			keyPartsPool.Put(keyParts)
+			fieldValuesPool.Put(fieldValues)
 			continue
 		}
 
@@ -556,13 +619,25 @@ func processLogFile(reader io.Reader, statsMap map[string]*TrafficStats, fieldIn
 		if stats, exists := statsMap[key]; exists {
 			stats.UpTotal += upTraffic
 			stats.DownTotal += downTraffic
+			// key已存在，归还Pool对象（因为fieldValues不会被使用）
+			keyPartsPool.Put(keyParts)
+			fieldValuesPool.Put(fieldValues)
 		} else {
+			// key不存在，需要复制fieldValues到新的map（因为Pool对象会被复用）
+			// 预分配容量避免rehash
+			fieldValuesCopy := make(map[string]string, len(fieldValues))
+			for k, v := range fieldValues {
+				fieldValuesCopy[k] = v
+			}
 			statsMap[key] = &TrafficStats{
 				Key:       key,
-				Fields:    fieldValues,
+				Fields:    fieldValuesCopy,
 				UpTotal:   upTraffic,
 				DownTotal: downTraffic,
 			}
+			// 归还Pool对象
+			keyPartsPool.Put(keyParts)
+			fieldValuesPool.Put(fieldValues)
 		}
 	}
 
