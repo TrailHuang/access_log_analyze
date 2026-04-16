@@ -75,6 +75,26 @@ echo "示例14: 按总流量排序"
 echo "./build/access_log_analyzer -sort total /path/to/logs"
 echo ""
 
+# 示例15: 限制CSV导出行数
+echo "示例15: 限制CSV导出行数为500"
+echo "./build/access_log_analyzer -csv_top 500 /path/to/logs"
+echo ""
+
+# 示例16: 导出全部数据到CSV
+echo "示例16: 导出全部数据到CSV(不限制)"
+echo "./build/access_log_analyzer -csv_top 0 /path/to/logs"
+echo ""
+
+# 示例17: 指定协程数
+echo "示例17: 使用8个协程并发处理"
+echo "./build/access_log_analyzer -workers 8 /path/to/logs"
+echo ""
+
+# 示例18: 完整参数示例
+echo "示例18: 完整参数示例"
+echo "./build/access_log_analyzer -fields sip,dip,domain -sort down -top 20 -csv_top 500 -workers 8 /path/to/logs"
+echo ""
+
 echo "========== 支持的字段列表 =========="
 echo "house_id     - HouseId"
 echo "sip          - 源IP"
@@ -102,6 +122,8 @@ echo "========== 参数说明 =========="
 echo "-fields    统计字段,用逗号分隔 (默认: dip,domain)"
 echo "-top       显示Top N条记录 (默认: 10)"
 echo "-sort      排序方式: up(上行流量), down(下行流量), total(总流量) (默认: up)"
+echo "-csv_top   CSV文件导出最大行数 (默认: 1000, 0表示全部)"
+echo "-workers   并发协程数 (默认: 4)"
 echo "-output    输出CSV文件名 (默认: 自动生成 traffic_stats_时间戳.csv)"
 echo "-log_path  日志文件路径(目录或tar.gz文件)"
 echo "-sip       源IP过滤,支持逗号分隔多个值,支持*模糊匹配"
