@@ -26,7 +26,7 @@ all: build package
 build:
 	@echo "==> 构建 $(BINARY_NAME) (Linux x86_64)..."
 	@mkdir -p build
-	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME) main.go
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME) ./cmd/access_log_analyzer/
 	@echo "==> 构建完成: build/$(BINARY_NAME)"
 
 # 打包二进制和配置文件
@@ -99,6 +99,11 @@ help:
 	@echo "  deps        - 下载依赖"
 	@echo "  version     - 显示版本信息"
 	@echo "  help        - 显示此帮助信息"
+	@echo ""
+	@echo "项目结构:"
+	@echo "  cmd/access_log_analyzer/  - 程序入口"
+	@echo "  internal/                 - 内部实现模块"
+	@echo "  pkg/                      - 公共数据模型"
 	@echo ""
 	@echo "示例:"
 	@echo "  make                          # 构建并打包"
