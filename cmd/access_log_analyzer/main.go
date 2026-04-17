@@ -16,13 +16,13 @@ import (
 )
 
 func main() {
-	// 定义命令行参数
-	fields := flag.String("fields", "dip,domain", "统计字段,用逗号分隔")
-	topN := flag.Int("top", 10, "显示Top N条记录")
-	sortBy := flag.String("sort", "up", "排序方式: up(上行流量), down(下行流量), total(总流量)")
-	csvTop := flag.Int("csv_top", 1000, "CSV文件导出最大行数(默认1000, 0表示全部)")
-	workers := flag.Int("workers", 4, "并发协程数(默认4)")
-	batchSize := flag.Int("batch_size", 0, "每批处理的文件数量后生成临时CSV(默认0表示不生成)")
+	// 定义命令行参数（不带默认值）
+	fields := flag.String("fields", "", "统计字段,用逗号分隔")
+	topN := flag.Int("top", 0, "显示Top N条记录")
+	sortBy := flag.String("sort", "", "排序方式: up(上行流量), down(下行流量), total(总流量)")
+	csvTop := flag.Int("csv_top", 0, "CSV文件导出最大行数(0表示全部)")
+	workers := flag.Int("workers", 0, "并发协程数")
+	batchSize := flag.Int("batch_size", 0, "每批处理的文件数量后生成临时CSV(0表示不生成)")
 	output := flag.String("output", "", "输出CSV文件名(默认自动生成)")
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 	mergeDir := flag.String("merge", "", "合并目录: 将目录下所有up/down/total CSV文件按fields合并")
@@ -34,8 +34,8 @@ func main() {
 	domainFilter := flag.String("domain", "", "域名过滤,支持逗号分隔多个值,支持*模糊匹配")
 	startTime := flag.String("start", "", "开始时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	endTime := flag.String("end", "", "结束时间(格式: YYYYMMDDHHmmss，精确到秒)")
-	configFile := flag.String("config", "config.json", "过滤器配置文件路径(JSON格式，可选)")
-	pprofSwitch := flag.Bool("pprof", false, "是否开启性能分析(默认false)")
+	configFile := flag.String("config", "", "过滤器配置文件路径(JSON格式，不指定则使用config.json)")
+	pprofSwitch := flag.Bool("pprof", false, "是否开启性能分析")
 
 	flag.Parse()
 
@@ -48,15 +48,15 @@ func main() {
 		return
 	}
 
-	// 验证排序参数
-	if *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
+	// 验证排序参数（如果指定了排序参数）
+	if *sortBy != "" && *sortBy != "up" && *sortBy != "down" && *sortBy != "total" {
 		fmt.Printf("错误: 无效的排序方式: %s (支持: up, down, total)\n", *sortBy)
 		os.Exit(1)
 	}
 
-	// 验证协程数
-	if *workers <= 0 {
-		fmt.Printf("错误: 协程数必须大于0\n")
+	// 验证协程数（如果指定了协程数）
+	if *workers < 0 {
+		fmt.Printf("错误: 协程数不能为负数\n")
 		os.Exit(1)
 	}
 
@@ -80,7 +80,7 @@ func main() {
 	// 加载配置文件
 	filterConfig, err := config.LoadFilterConfig(*configFile)
 	if err != nil {
-		fmt.Printf("错误: %v\n", err)
+		fmt.Printf("错误: 加载配置文件失败: %v\n", err)
 		os.Exit(1)
 	}
 

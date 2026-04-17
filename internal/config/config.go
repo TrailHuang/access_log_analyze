@@ -32,17 +32,22 @@ type FilterConfig struct {
 }
 
 // LoadFilterConfig 从配置文件加载过滤规则
-// 配置文件是可选的，不存在时返回 nil
+// 如果指定了config文件但不存在则失败，如果没有指定config但默认config.json不存在则使用内置配置
 func LoadFilterConfig(configPath string) (*FilterConfig, error) {
+	// 如果没有指定配置文件路径，使用默认的config.json
 	if configPath == "" {
-		return nil, nil
+		configPath = "config.json"
 	}
 
 	// 检查文件是否存在
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		// 配置文件不存在，返回 nil（不报错）
-		fmt.Printf("配置文件 %s 不存在，将使用默认配置和命令行参数\n", configPath)
-		return nil, nil
+		// 如果是指定的配置文件不存在，则报错
+		if configPath != "config.json" {
+			return nil, fmt.Errorf("指定的配置文件不存在: %s", configPath)
+		}
+		// 如果是默认的config.json不存在，则使用内置配置
+		fmt.Printf("默认配置文件 config.json 不存在，使用内置默认配置\n")
+		return getDefaultConfig(), nil
 	}
 
 	fmt.Println("加载配置文件:", configPath)
@@ -63,17 +68,37 @@ func LoadFilterConfig(configPath string) (*FilterConfig, error) {
 	return &cfg, nil
 }
 
+// getDefaultConfig 返回内置默认配置
+func getDefaultConfig() *FilterConfig {
+	return &FilterConfig{
+		Fields:        "dip,domain",
+		TopN:          10,
+		SortBy:        "up,down",
+		CsvTop:        1000,
+		Workers:       4,
+		BatchSize:     0,
+		Output:        "output.csv",
+		LogPath:       "",
+		StartTime:     "",
+		EndTime:       "",
+		PprofSwitch:   false,
+		SIPFilters:    []string{},
+		DIPFilters:    []string{},
+		DomainFilters: []string{},
+	}
+}
+
 // MergeConfig 合并配置文件和命令行参数，命令行参数优先级更高
 func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdPprofSwitch bool) (*FilterConfig, error) {
-	// 如果没有配置文件，直接返回命令行参数
+	// 如果没有配置文件，直接返回命令行参数（如果命令行参数为空，则使用内置默认值）
 	if configFile == nil {
 		return &FilterConfig{
-			Fields:        cmdFields,
-			TopN:          cmdTopN,
-			SortBy:        cmdSortBy,
-			CsvTop:        cmdCsvTop,
-			Workers:       cmdWorkers,
-			BatchSize:     cmdBatchSize,
+			Fields:        getValueOrDefault(cmdFields, "dip,domain"),
+			TopN:          getIntOrDefault(cmdTopN, 10),
+			SortBy:        getValueOrDefault(cmdSortBy, "up"),
+			CsvTop:        getIntOrDefault(cmdCsvTop, 1000),
+			Workers:       getIntOrDefault(cmdWorkers, 4),
+			BatchSize:     getIntOrDefault(cmdBatchSize, 0),
 			Output:        cmdOutput,
 			LogPath:       cmdLogPath,
 			StartTime:     cmdStartTime,
@@ -104,48 +129,39 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	}
 
 	// 命令行参数覆盖配置文件（命令行显式指定的优先）
-	// fields: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdFields != "dip,domain" || configFile.Fields == "" {
+	// 如果命令行参数不为空，则覆盖配置文件的值
+	if cmdFields != "" {
 		merged.Fields = cmdFields
 	}
-	// topN: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdTopN != 10 || configFile.TopN == 0 {
+	if cmdTopN != 0 {
 		merged.TopN = cmdTopN
 	}
-	// sortBy: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdSortBy != "up" || configFile.SortBy == "" {
+	if cmdSortBy != "" {
 		merged.SortBy = cmdSortBy
-	} else {
-		// 如果命令行是默认值，使用配置文件的值
-		merged.SortBy = configFile.SortBy
 	}
-	// csvTop: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdCsvTop != 1000 || configFile.CsvTop == 0 {
+	if cmdCsvTop != 0 {
 		merged.CsvTop = cmdCsvTop
 	}
-	// workers: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdWorkers != 4 || configFile.Workers == 0 {
+	if cmdWorkers != 0 {
 		merged.Workers = cmdWorkers
 	}
-	// batchSize: 如果命令行不是默认值，或者配置文件没有设置，则使用命令行
-	if cmdBatchSize != 0 || configFile.BatchSize == 0 {
+	if cmdBatchSize != 0 {
 		merged.BatchSize = cmdBatchSize
 	}
-	// output: 如果命令行有指定，或者配置文件没有设置，则使用命令行
-	if cmdOutput != "" || configFile.Output == "" {
+	if cmdOutput != "" {
 		merged.Output = cmdOutput
 	}
-	// logPath: 如果命令行有指定，或者配置文件没有设置，则使用命令行
-	if cmdLogPath != "" || configFile.LogPath == "" {
+	if cmdLogPath != "" {
 		merged.LogPath = cmdLogPath
 	}
-	// startTime: 如果命令行有指定，或者配置文件没有设置，则使用命令行
-	if cmdStartTime != "" || configFile.StartTime == "" {
+	if cmdStartTime != "" {
 		merged.StartTime = cmdStartTime
 	}
-	// endTime: 如果命令行有指定，或者配置文件没有设置，则使用命令行
-	if cmdEndTime != "" || configFile.EndTime == "" {
+	if cmdEndTime != "" {
 		merged.EndTime = cmdEndTime
+	}
+	if cmdPprofSwitch {
+		merged.PprofSwitch = cmdPprofSwitch
 	}
 
 	// 合并过滤参数（命令行和配置文件都生效）
@@ -160,4 +176,20 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	}
 
 	return merged, nil
+}
+
+// getValueOrDefault 如果值不为空则返回值，否则返回默认值
+func getValueOrDefault(value, defaultValue string) string {
+	if value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// getIntOrDefault 如果值不为0则返回值，否则返回默认值
+func getIntOrDefault(value, defaultValue int) int {
+	if value != 0 {
+		return value
+	}
+	return defaultValue
 }
