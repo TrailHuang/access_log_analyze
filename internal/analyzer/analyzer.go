@@ -21,20 +21,6 @@ import (
 
 // Pool 对象池配置
 var (
-	// fieldValuesPool 复用 map[string]string，预分配容量30
-	FieldValuesPool = sync.Pool{
-		New: func() interface{} {
-			return make(map[string]string, 30)
-		},
-	}
-
-	// keyPartsPool 复用 []string，预分配容量20
-	KeyPartsPool = sync.Pool{
-		New: func() interface{} {
-			return make([]string, 0, 20)
-		},
-	}
-
 	// keyBuilderPool 复用 strings.Builder 用于构建key
 	KeyBuilderPool = sync.Pool{
 		New: func() interface{} {
@@ -42,6 +28,49 @@ var (
 		},
 	}
 )
+
+// fieldPos 表示字段在行中的字节偏移位置
+type fieldPos struct {
+	start int
+	end   int
+}
+
+// findFieldPositions 找到所有字段的字节位置（以 | 分隔），零分配
+func findFieldPositions(line []byte, positions []fieldPos) []fieldPos {
+	positions = positions[:0]
+	start := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '|' {
+			positions = append(positions, fieldPos{start: start, end: i})
+			start = i + 1
+		}
+	}
+	// 最后一个字段
+	positions = append(positions, fieldPos{start: start, end: len(line)})
+	return positions
+}
+
+// trimSpaceBytes 对 []byte 执行 TrimSpace 并转为 string
+func trimSpaceBytes(data []byte) string {
+	// 手动 trim 前后空白，避免分配
+	start := 0
+	end := len(data)
+	for start < end && (data[start] == ' ' || data[start] == '\t' || data[start] == '\r' || data[start] == '\n') {
+		start++
+	}
+	for end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\r' || data[end-1] == '\n') {
+		end--
+	}
+	return string(data[start:end])
+}
+
+// getFieldString 从预计算的 fieldPos 切片中提取第 idx 个字段并 TrimSpace 转 string
+func getFieldString(line []byte, positions []fieldPos, idx int) string {
+	if idx < 0 || idx >= len(positions) {
+		return ""
+	}
+	return trimSpaceBytes(line[positions[idx].start:positions[idx].end])
+}
 
 // ProcessTarGz 处理单个tar.gz文件
 func ProcessTarGz(filePath string, statsMap map[string]*models.TrafficStats, fieldIndexes map[string]int, filters *models.LogFilters) error {
@@ -90,7 +119,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 	// 增加buffer大小以处理长行
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
-	// 优化2: 字段排序只做一次 - 在循环外预排序字段
+	// 预排序字段，循环外只做一次
 	type fieldPair struct {
 		name string
 		idx  int
@@ -99,128 +128,145 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 	for name, idx := range fieldIndexes {
 		sortedFields = append(sortedFields, fieldPair{name, idx})
 	}
-	// 按索引排序
 	sort.Slice(sortedFields, func(i, j int) bool {
 		return sortedFields[i].idx < sortedFields[j].idx
 	})
 
+	// 预计算需要哪些额外过滤字段索引（避免循环中查 map）
+	type filterField struct {
+		name    string
+		idx     int
+		enabled bool
+	}
+	filterFields := []filterField{
+		{"sip", 1, len(filters.SIPFilters) > 0},
+		{"dip", 2, len(filters.DIPFilters) > 0},
+		{"domain", 6, len(filters.DomainFilters) > 0},
+	}
+	// 检查过滤字段是否已在统计字段中
+	fieldIndexSet := make(map[string]bool, len(sortedFields))
+	for _, fp := range sortedFields {
+		fieldIndexSet[fp.name] = true
+	}
+	for i := range filterFields {
+		if fieldIndexSet[filterFields[i].name] {
+			filterFields[i].enabled = false // 已在统计字段中，不需要额外提取
+		}
+	}
+	needFilter := len(filters.SIPFilters) > 0 || len(filters.DIPFilters) > 0 || len(filters.DomainFilters) > 0
+
+	// 预分配 field positions 缓冲区，避免每行分配
+	positions := make([]fieldPos, 0, 32)
+
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
-		line := scanner.Text()
+		lineBytes := scanner.Bytes()
 
 		// 跳过空行
-		if strings.TrimSpace(line) == "" {
+		if len(lineBytes) == 0 {
+			continue
+		}
+		allSpace := true
+		for _, b := range lineBytes {
+			if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+				allSpace = false
+				break
+			}
+		}
+		if allSpace {
 			continue
 		}
 
-		// 优化1: 使用strings.Split替代csv.Reader，避免每行创建新对象
-		fields := strings.Split(line, "|")
+		// 找到所有字段位置（零分配，复用 positions）
+		positions = findFieldPositions(lineBytes, positions[:0])
 
-		if len(fields) < 20 {
+		if len(positions) < 20 {
 			continue
 		}
 
-		// 优化3: 使用sync.Pool复用对象，减少GC压力
-		keyParts := KeyPartsPool.Get().([]string)
-		keyParts = keyParts[:0]
-
-		fieldValues := FieldValuesPool.Get().(map[string]string)
-		for k := range fieldValues {
-			delete(fieldValues, k)
-		}
-
-		// 按排序后的顺序提取
-		for _, fp := range sortedFields {
-			value := strings.TrimSpace(fields[fp.idx])
-			if value == "" {
-				value = "-"
+		// ---- 过滤阶段：在构建 key 之前先做过滤，减少不必要的工作 ----
+		if needFilter {
+			skip := false
+			for _, ff := range filterFields {
+				if !ff.enabled {
+					continue
+				}
+				value := getFieldString(lineBytes, positions, ff.idx)
+				switch ff.name {
+				case "sip":
+					if !MatchFilter(value, filters.SIPFilters) {
+						skip = true
+					}
+				case "dip":
+					if !MatchFilter(value, filters.DIPFilters) {
+						skip = true
+					}
+				case "domain":
+					if !MatchFilter(value, filters.DomainFilters) {
+						skip = true
+					}
+				}
+				if skip {
+					break
+				}
 			}
-			keyParts = append(keyParts, value)
-			fieldValues[fp.name] = value
-		}
-
-		// 提取过滤需要的字段(如果不在统计字段中)
-		if len(filters.SIPFilters) > 0 && fieldValues["sip"] == "" {
-			value := strings.TrimSpace(fields[1])
-			if value == "" {
-				value = "-"
+			if skip {
+				continue
 			}
-			fieldValues["sip"] = value
-		}
-		if len(filters.DIPFilters) > 0 && fieldValues["dip"] == "" {
-			value := strings.TrimSpace(fields[2])
-			if value == "" {
-				value = "-"
-			}
-			fieldValues["dip"] = value
-		}
-		if len(filters.DomainFilters) > 0 && fieldValues["domain"] == "" {
-			value := strings.TrimSpace(fields[6])
-			if value == "" {
-				value = "-"
-			}
-			fieldValues["domain"] = value
 		}
 
-		// 优化4: 使用strings.Builder复用对象构建key
+		// ---- 构建 key 和提取字段值 ----
+		// 提取统计字段值
 		keyBuilder := KeyBuilderPool.Get().(*strings.Builder)
 		keyBuilder.Reset()
 
-		totalLen := 0
-		for i, part := range keyParts {
-			totalLen += len(part)
-			if i < len(keyParts)-1 {
-				totalLen++
+		fieldValues := make(map[string]string, len(sortedFields)+3)
+		for i, fp := range sortedFields {
+			value := getFieldString(lineBytes, positions, fp.idx)
+			if value == "" {
+				value = "-"
 			}
-		}
-		keyBuilder.Grow(totalLen)
-
-		for i, part := range keyParts {
+			fieldValues[fp.name] = value
 			if i > 0 {
 				keyBuilder.WriteByte('|')
 			}
-			keyBuilder.WriteString(part)
+			keyBuilder.WriteString(value)
 		}
+
+		// 提取过滤字段值（如果不在统计字段中）
+		for _, ff := range filterFields {
+			if ff.enabled {
+				value := getFieldString(lineBytes, positions, ff.idx)
+				if value == "" {
+					value = "-"
+				}
+				fieldValues[ff.name] = value
+			}
+		}
+
 		key := keyBuilder.String()
 		KeyBuilderPool.Put(keyBuilder)
 
-		// 应用过滤条件
-		sip := fieldValues["sip"]
-		dip := fieldValues["dip"]
-		domain := fieldValues["domain"]
+		// ---- 提取流量数据 ----
+		upTrafficStr := getFieldString(lineBytes, positions, 18)
+		downTrafficStr := getFieldString(lineBytes, positions, 19)
+		upTraffic, _ := strconv.ParseInt(upTrafficStr, 10, 64)
+		downTraffic, _ := strconv.ParseInt(downTrafficStr, 10, 64)
 
-		if !MatchFilter(sip, filters.SIPFilters) || !MatchFilter(dip, filters.DIPFilters) || !MatchFilter(domain, filters.DomainFilters) {
-			KeyPartsPool.Put(keyParts)
-			FieldValuesPool.Put(fieldValues)
-			continue
-		}
-
-		// 提取上行流量 (索引18) 和 下行流量 (索引19)
-		upTraffic, _ := strconv.ParseInt(strings.TrimSpace(fields[18]), 10, 64)
-		downTraffic, _ := strconv.ParseInt(strings.TrimSpace(fields[19]), 10, 64)
-
-		// 更新统计
+		// ---- 更新统计 ----
 		if stats, exists := statsMap[key]; exists {
 			stats.UpTotal += upTraffic
 			stats.DownTotal += downTraffic
 			stats.FlowTotal++
-			KeyPartsPool.Put(keyParts)
-			FieldValuesPool.Put(fieldValues)
 		} else {
-			fieldValuesCopy := make(map[string]string, len(fieldValues))
-			for k, v := range fieldValues {
-				fieldValuesCopy[k] = v
-			}
 			statsMap[key] = &models.TrafficStats{
 				Key:       key,
-				Fields:    fieldValuesCopy,
+				Fields:    fieldValues,
 				UpTotal:   upTraffic,
 				DownTotal: downTraffic,
 				FlowTotal: 1,
 			}
-			KeyPartsPool.Put(keyParts)
-			FieldValuesPool.Put(fieldValues)
 		}
 	}
 
