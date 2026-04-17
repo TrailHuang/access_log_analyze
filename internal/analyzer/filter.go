@@ -3,7 +3,11 @@ package analyzer
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
+
+// compiledRegexCache 缓存已编译的正则表达式
+var compiledRegexCache sync.Map
 
 // MatchFilter 检查值是否匹配过滤条件
 func MatchFilter(value string, filters []string) bool {
@@ -26,15 +30,19 @@ func matchPattern(value, pattern string) bool {
 		return value == pattern
 	}
 
-	// 将*转换为正则表达式
-	regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
-	regexPattern = strings.ReplaceAll(regexPattern, `\*`, ".*")
-
-	matched, err := regexp.MatchString(regexPattern, value)
-	if err != nil {
-		return false
+	// 从缓存获取或编译正则表达式
+	re, ok := compiledRegexCache.Load(pattern)
+	if !ok {
+		regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
+		regexPattern = strings.ReplaceAll(regexPattern, `\*`, ".*")
+		compiled, err := regexp.Compile(regexPattern)
+		if err != nil {
+			return false
+		}
+		re, _ = compiledRegexCache.LoadOrStore(pattern, compiled)
 	}
-	return matched
+
+	return re.(*regexp.Regexp).MatchString(value)
 }
 
 // ParseFilterPatterns 解析过滤模式

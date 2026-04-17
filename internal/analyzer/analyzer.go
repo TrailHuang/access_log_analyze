@@ -313,11 +313,12 @@ func ProcessFilesConcurrent(files []string, fieldIndexes map[string]int, filters
 	processedFiles := 0
 
 	for res := range resultCh {
-		processedFiles++
 		if res.stats != nil {
 			mergeStats(finalStats, res.stats)
+			continue // stats消息不计入文件进度
 		}
 
+		processedFiles++
 		if processedFiles%10 == 0 || processedFiles == len(files) {
 			fmt.Printf("\r已处理: %d/%d 文件", processedFiles, len(files))
 		}
@@ -413,11 +414,11 @@ func GenerateTempCSV(statsMap map[string]*models.TrafficStats, fieldIndexes map[
 		}
 		writer.WriteString(fmt.Sprintf(",%d,%s,%d,%s,%d,%s,%d\n",
 			stats.UpTotal,
-			FormatBytes(stats.UpTotal),
+			models.FormatBytes(stats.UpTotal),
 			stats.DownTotal,
-			FormatBytes(stats.DownTotal),
+			models.FormatBytes(stats.DownTotal),
 			stats.UpTotal+stats.DownTotal,
-			FormatBytes(stats.UpTotal+stats.DownTotal),
+			models.FormatBytes(stats.UpTotal+stats.DownTotal),
 			stats.FlowTotal,
 		))
 	}
@@ -515,11 +516,11 @@ func PrintResults(statsMap map[string]*models.TrafficStats, fieldIndexes map[str
 			totalBytes := stats.UpTotal + stats.DownTotal
 			row = append(row,
 				fmt.Sprintf("%d", stats.UpTotal),
-				FormatBytes(stats.UpTotal),
+				models.FormatBytes(stats.UpTotal),
 				fmt.Sprintf("%d", stats.DownTotal),
-				FormatBytes(stats.DownTotal),
+				models.FormatBytes(stats.DownTotal),
 				fmt.Sprintf("%d", totalBytes),
-				FormatBytes(totalBytes),
+				models.FormatBytes(totalBytes),
 				fmt.Sprintf("%d", stats.FlowTotal),
 			)
 			table.Append(row)
@@ -535,11 +536,11 @@ func PrintResults(statsMap map[string]*models.TrafficStats, fieldIndexes map[str
 		}
 		totalRow = append(totalRow,
 			fmt.Sprintf("%d", totalUp),
-			FormatBytes(totalUp),
+			models.FormatBytes(totalUp),
 			fmt.Sprintf("%d", totalDown),
-			FormatBytes(totalDown),
+			models.FormatBytes(totalDown),
 			fmt.Sprintf("%d", totalAll),
-			FormatBytes(totalAll),
+			models.FormatBytes(totalAll),
 			fmt.Sprintf("%d", totalFlow),
 		)
 		table.Append(totalRow)
@@ -609,11 +610,11 @@ func ExportToCSV(statsList []*models.TrafficStats, fieldIndexes map[string]int, 
 		}
 		writer.WriteString(fmt.Sprintf(",%d,%s,%d,%s,%d,%s,%d\n",
 			stats.UpTotal,
-			FormatBytes(stats.UpTotal),
+			models.FormatBytes(stats.UpTotal),
 			stats.DownTotal,
-			FormatBytes(stats.DownTotal),
+			models.FormatBytes(stats.DownTotal),
 			stats.UpTotal+stats.DownTotal,
-			FormatBytes(stats.UpTotal+stats.DownTotal),
+			models.FormatBytes(stats.UpTotal+stats.DownTotal),
 			stats.FlowTotal,
 		))
 	}
@@ -630,23 +631,3 @@ func ExportToCSV(statsList []*models.TrafficStats, fieldIndexes map[string]int, 
 	fmt.Println()
 }
 
-// FormatBytes 将字节数格式化为人类可读的形式
-func FormatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-		TB = 1024 * GB
-	)
-
-	if bytes >= TB {
-		return fmt.Sprintf("%.2f TB", float64(bytes)/float64(TB))
-	} else if bytes >= GB {
-		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
-	} else if bytes >= MB {
-		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
-	} else if bytes >= KB {
-		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
-	}
-	return fmt.Sprintf("%d B", bytes)
-}

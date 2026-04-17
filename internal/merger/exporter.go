@@ -9,6 +9,10 @@ import (
 
 // ExportMergedCSV 导出合并后的CSV
 func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile string, sortType string, durationSeconds float64) error {
+	if durationSeconds <= 0 {
+		durationSeconds = 1 // 防止除零，默认1秒
+	}
+
 	file, err := os.Create(outputFile)
 	if err != nil {
 		return fmt.Errorf("创建文件失败: %v", err)
@@ -39,10 +43,11 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		groupField = fieldList[0]
 	}
 
-	groupRank := make(map[string]int)        // 记录每个分组的当前排名
-	groupUpTotal := make(map[string]int64)   // 记录每个分组的上行总字节
-	groupDownTotal := make(map[string]int64) // 记录每个分组的下行总字节
-	groupFlowTotal := make(map[string]int64) // 记录每个分组的总流数
+	groupRank := make(map[string]int)         // 记录每个分组的当前排名
+	groupUpTotal := make(map[string]int64)    // 记录每个分组的上行总字节
+	groupDownTotal := make(map[string]int64)  // 记录每个分组的下行总字节
+	groupTotalBytes := make(map[string]int64) // 记录每个分组的总字节数(上行+下行)
+	groupFlowCount := make(map[string]int64)  // 记录每个分组的总流数
 
 	var lastGroupKey string // 记录上一个分组的key
 
@@ -58,7 +63,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			// 计算上一个分组的Mbps
 			lastUpMbps := float64(groupUpTotal[lastGroupKey]*8) / durationSeconds / 1000000
 			lastDownMbps := float64(groupDownTotal[lastGroupKey]*8) / durationSeconds / 1000000
-			lastTotalMbps := float64(groupFlowTotal[lastGroupKey]*8) / durationSeconds / 1000000
+			lastTotalMbps := float64(groupTotalBytes[lastGroupKey]*8) / durationSeconds / 1000000
 
 			summaryRow := []string{"汇总"}
 			// 填充字段列（第一个字段显示IP，其他留空）
@@ -71,15 +76,15 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			}
 			summaryRow = append(summaryRow,
 				fmt.Sprintf("%d", groupUpTotal[lastGroupKey]),
-				FormatBytes(groupUpTotal[lastGroupKey]),
+				models.FormatBytes(groupUpTotal[lastGroupKey]),
 				fmt.Sprintf("%.2f", lastUpMbps),
 				fmt.Sprintf("%d", groupDownTotal[lastGroupKey]),
-				FormatBytes(groupDownTotal[lastGroupKey]),
+				models.FormatBytes(groupDownTotal[lastGroupKey]),
 				fmt.Sprintf("%.2f", lastDownMbps),
-				fmt.Sprintf("%d", groupFlowTotal[lastGroupKey]),
-				FormatBytes(groupFlowTotal[lastGroupKey]),
+				fmt.Sprintf("%d", groupTotalBytes[lastGroupKey]),
+				models.FormatBytes(groupTotalBytes[lastGroupKey]),
 				fmt.Sprintf("%.2f", lastTotalMbps),
-				"",
+				fmt.Sprintf("%d", groupFlowCount[lastGroupKey]),
 			)
 			writer.Write(summaryRow)
 
@@ -87,7 +92,8 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			delete(groupRank, lastGroupKey)
 			delete(groupUpTotal, lastGroupKey)
 			delete(groupDownTotal, lastGroupKey)
-			delete(groupFlowTotal, lastGroupKey)
+			delete(groupTotalBytes, lastGroupKey)
+			delete(groupFlowCount, lastGroupKey)
 		}
 
 		// 计算该分组内的排名
@@ -105,13 +111,13 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		}
 		row = append(row,
 			fmt.Sprintf("%d", record.UpTotal),
-			FormatBytes(record.UpTotal),
+			models.FormatBytes(record.UpTotal),
 			fmt.Sprintf("%.2f", upMbps),
 			fmt.Sprintf("%d", record.DownTotal),
-			FormatBytes(record.DownTotal),
+			models.FormatBytes(record.DownTotal),
 			fmt.Sprintf("%.2f", downMbps),
 			fmt.Sprintf("%d", record.FlowTotal),
-			FormatBytes(record.FlowTotal),
+			models.FormatBytes(record.FlowTotal),
 			fmt.Sprintf("%.2f", totalMbps),
 			fmt.Sprintf("%d", record.FlowCount),
 		)
@@ -120,7 +126,8 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		// 累加分组统计
 		groupUpTotal[groupKey] += record.UpTotal
 		groupDownTotal[groupKey] += record.DownTotal
-		groupFlowTotal[groupKey] += record.FlowCount
+		groupTotalBytes[groupKey] += record.FlowTotal
+		groupFlowCount[groupKey] += record.FlowCount
 
 		totalUp += record.UpTotal
 		totalDown += record.DownTotal
@@ -135,7 +142,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 	if lastGroupKey != "" {
 		lastUpMbps := float64(groupUpTotal[lastGroupKey]*8) / durationSeconds / 1000000
 		lastDownMbps := float64(groupDownTotal[lastGroupKey]*8) / durationSeconds / 1000000
-		lastTotalMbps := float64(groupFlowTotal[lastGroupKey]*8) / durationSeconds / 1000000
+		lastTotalMbps := float64(groupTotalBytes[lastGroupKey]*8) / durationSeconds / 1000000
 
 		summaryRow := []string{"汇总"}
 		for i := 0; i < len(fieldList); i++ {
@@ -147,15 +154,15 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		}
 		summaryRow = append(summaryRow,
 			fmt.Sprintf("%d", groupUpTotal[lastGroupKey]),
-			FormatBytes(groupUpTotal[lastGroupKey]),
+			models.FormatBytes(groupUpTotal[lastGroupKey]),
 			fmt.Sprintf("%.2f", lastUpMbps),
 			fmt.Sprintf("%d", groupDownTotal[lastGroupKey]),
-			FormatBytes(groupDownTotal[lastGroupKey]),
+			models.FormatBytes(groupDownTotal[lastGroupKey]),
 			fmt.Sprintf("%.2f", lastDownMbps),
-			fmt.Sprintf("%d", groupFlowTotal[lastGroupKey]),
-			FormatBytes(groupFlowTotal[lastGroupKey]),
+			fmt.Sprintf("%d", groupTotalBytes[lastGroupKey]),
+			models.FormatBytes(groupTotalBytes[lastGroupKey]),
 			fmt.Sprintf("%.2f", lastTotalMbps),
-			"",
+			fmt.Sprintf("%d", groupFlowCount[lastGroupKey]),
 		)
 		writer.Write(summaryRow)
 	}
@@ -171,13 +178,13 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 	}
 	totalRow = append(totalRow,
 		fmt.Sprintf("%d", totalUp),
-		FormatBytes(totalUp),
+		models.FormatBytes(totalUp),
 		fmt.Sprintf("%.2f", totalUpMbps),
 		fmt.Sprintf("%d", totalDown),
-		FormatBytes(totalDown),
+		models.FormatBytes(totalDown),
 		fmt.Sprintf("%.2f", totalDownMbps),
 		fmt.Sprintf("%d", totalFlow),
-		FormatBytes(totalFlow),
+		models.FormatBytes(totalFlow),
 		fmt.Sprintf("%.2f", totalFlowMbps),
 		fmt.Sprintf("%d", totalFlowCount),
 	)
@@ -241,23 +248,3 @@ func PrintHelp() {
 	fmt.Println("        会生成: merged_up.csv, merged_down.csv, top10_up.csv, top10_down.csv")
 }
 
-// FormatBytes 将字节数格式化为人类可读的形式
-func FormatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-		TB = 1024 * GB
-	)
-
-	if bytes >= TB {
-		return fmt.Sprintf("%.2f TB", float64(bytes)/float64(TB))
-	} else if bytes >= GB {
-		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
-	} else if bytes >= MB {
-		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
-	} else if bytes >= KB {
-		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
-	}
-	return fmt.Sprintf("%d B", bytes)
-}
