@@ -5,10 +5,6 @@ BINARY_NAME=access_log_analyzer
 GO=go
 GOFLAGS=-v
 
-# 构建参数 - 针对 Linux x86_64
-GOOS=linux
-GOARCH=amd64
-
 # 版本信息(可通过命令行覆盖)
 VERSION?=1.0.0
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
@@ -17,27 +13,25 @@ GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # ldflags 用于嵌入版本信息
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
 
-# 默认目标
+# 默认目标：编译双架构
 .PHONY: all
-all: build package
+all: build-amd64 build-arm64
 
-# 构建 Linux x86_64 二进制文件
-.PHONY: build
-build:
-	@echo "==> 构建 $(BINARY_NAME) (Linux x86_64)..."
+# 编译 Linux x86_64
+.PHONY: build-amd64
+build-amd64:
+	@echo "==> 构建 $(BINARY_NAME) (linux/amd64)..."
 	@mkdir -p build
-	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME) ./cmd/access_log_analyzer/
-	@echo "==> 构建完成: build/$(BINARY_NAME)"
+	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME)_linux_amd64 ./cmd/access_log_analyzer/
+	@echo "==> 完成: build/$(BINARY_NAME)_linux_amd64"
 
-# 打包二进制和配置文件
-.PHONY: package
-package: build
-	@echo "==> 打包 $(BINARY_NAME) 和 config.json..."
-	@mkdir -p access_log_analyzer_release	
-	@cp build/$(BINARY_NAME) access_log_analyzer_release/
-	@cp config.json access_log_analyzer_release/
-	@tar -czf $(BINARY_NAME)_$(VERSION).tar.gz access_log_analyzer_release 
-	@echo "==> 打包完成: $(BINARY_NAME)_$(VERSION).tar.gz"
+# 编译 Linux aarch64
+.PHONY: build-arm64
+build-arm64:
+	@echo "==> 构建 $(BINARY_NAME) (linux/arm64)..."
+	@mkdir -p build
+	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS) $(LDFLAGS) -o build/$(BINARY_NAME)_linux_arm64 ./cmd/access_log_analyzer/
+	@echo "==> 完成: build/$(BINARY_NAME)_linux_arm64"
 
 # 清理构建文件
 .PHONY: clean
@@ -48,9 +42,9 @@ clean:
 
 # 运行程序
 .PHONY: run
-run: build
+run: build-amd64
 	@echo "==> 运行 $(BINARY_NAME)..."
-	./build/$(BINARY_NAME) $(ARGS)
+	./build/$(BINARY_NAME)_linux_amd64 $(ARGS)
 
 # 测试
 .PHONY: test
@@ -88,27 +82,21 @@ version:
 .PHONY: help
 help:
 	@echo "可用目标:"
-	@echo "  all/build   - 构建并打包 (默认)"
-	@echo "  build       - 仅构建 Linux x86_64 二进制文件"
-	@echo "  package     - 打包二进制文件和config.json为tar.gz"
-	@echo "  clean       - 清理构建文件"
-	@echo "  run         - 构建并运行程序 (使用 ARGS 参数)"
-	@echo "  test        - 运行测试"
-	@echo "  fmt         - 格式化代码"
-	@echo "  vet         - 代码检查"
-	@echo "  deps        - 下载依赖"
-	@echo "  version     - 显示版本信息"
-	@echo "  help        - 显示此帮助信息"
-	@echo ""
-	@echo "项目结构:"
-	@echo "  cmd/access_log_analyzer/  - 程序入口"
-	@echo "  internal/                 - 内部实现模块"
-	@echo "  pkg/                      - 公共数据模型"
+	@echo "  all          - 编译双架构 x86_64 + aarch64 (默认)"
+	@echo "  build-amd64  - 仅编译 linux/amd64"
+	@echo "  build-arm64  - 仅编译 linux/arm64"
+	@echo "  clean        - 清理构建文件"
+	@echo "  run          - 编译amd64并运行 (使用 ARGS 参数)"
+	@echo "  test         - 运行测试"
+	@echo "  fmt          - 格式化代码"
+	@echo "  vet          - 代码检查"
+	@echo "  deps         - 下载依赖"
+	@echo "  version      - 显示版本信息"
+	@echo "  help         - 显示此帮助信息"
 	@echo ""
 	@echo "示例:"
-	@echo "  make                          # 构建并打包"
-	@echo "  make build                    # 仅构建"
-	@echo "  make package                  # 打包"
+	@echo "  make                          # 编译双架构"
+	@echo "  make build-amd64              # 仅编译x86_64"
+	@echo "  make VERSION=2.0.0            # 指定版本号编译"
 	@echo "  make clean                    # 清理"
-	@echo "  make run ARGS=/path/to/logs   # 运行并指定目录"
-	@echo "  make version VERSION=2.0.0    # 指定版本号"
+	@echo "  ./build.sh 2.0.0              # 编译+打包为tar.gz"
