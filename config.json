@@ -8,6 +8,7 @@
   "output": "result.csv",
   "start_time": "",
   "end_time": "",
+  "pprof_switch": false,
   "sip_filters": [
   ],
   "dip_filters": [
