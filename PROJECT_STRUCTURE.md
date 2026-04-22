@@ -182,7 +182,7 @@ make clean    # 清理
    ```bash
    # 编译新版本
    go build -o access_log_analyzer ./cmd/access_log_analyzer/
-   
+
    # 使用方式完全相同
    ./access_log_analyzer [参数]
    ```
@@ -223,3 +223,99 @@ make clean    # 清理
 ## 许可证
 
 内部项目，保留所有权利。
+
+
+我先给你一个项目执行流程和模块调用关系，按实际代码路径来梳理。
+
+主执行链路：
+```text
+main
+ ├─ 解析命令行参数
+ ├─ 如果指定 -merge
+ │   └─ merger.MergeCSVFiles
+ │      ├─ 扫描目录下 CSV
+ │      ├─ 按 up/down/total 分类
+ │      ├─ mergeCSVFilesByType
+ │      │   ├─ 逐个读取 CSV
+ │      │   ├─ 按 fields 组合 key 聚合
+ │      │   └─ merger.ExportMergedCSV
+ │      └─ extractTopNPerKey
+ └─ 否则进入日志分析模式
+     ├─ analyzer.ParseFilterPatterns
+     ├─ config.LoadFilterConfig
+     ├─ config.MergeConfig
+     ├─ analyzer.ParseFieldNames
+     ├─ analyzer.ParseTime
+     ├─ analyzer.IsFileInTimeRange
+     ├─ analyzer.ProcessFilesConcurrent
+     │   ├─ 多 worker 消费 tar.gz 文件
+     │   ├─ analyzer.ProcessTarGz
+     │   │   ├─ gzip.NewReader
+     │   │   ├─ tar.NewReader
+     │   │   └─ processLogFile
+     │   │      ├─ findFieldPositions
+     │   │      ├─ MatchFilter
+     │   │      ├─ 提取统计字段
+     │   │      └─ 聚合到 statsMap
+     │   ├─ GenerateTempCSV（可选）
+     │   └─ mergeStats
+     └─ analyzer.PrintResults
+         ├─ 控制台表格输出
+         └─ ExportToCSV
+```
+
+模块职责图：
+```text
+cmd/access_log_analyzer/main.go
+- 程序入口
+- 负责参数解析、模式分流、串联各模块
+
+internal/config/config.go
+- 读取 config.json
+- 合并命令行与配置文件参数
+- 提供默认配置
+
+internal/analyzer/parser.go
+- 字段名 -> 日志列索引映射
+- 文件名时间提取与时间范围判断
+
+internal/analyzer/filter.go
+- 过滤表达式解析
+- 支持精确匹配和 * 通配匹配
+
+internal/analyzer/analyzer.go
+- tar.gz 解包
+- txt 日志逐行扫描
+- 字段抽取与过滤
+- 流量/流数聚合
+- 并发处理
+- 结果打印与 CSV 导出
+
+internal/merger/merger.go
+- 合并已导出的 up/down/total CSV
+- 二次按 fields 聚合
+- 提取每组 TopN
+
+internal/merger/exporter.go
+- 合并结果导出
+- 计算 Mbps、占比、汇总行
+
+pkg/models/models.go
+- TrafficStats / CSVRecord / LogFilters 数据结构
+
+pkg/models/format.go
+- 字节数格式化
+```
+
+如果你从维护角度理解，我建议重点关注这 3 条主线：
+- `配置流`：`main -> LoadFilterConfig -> MergeConfig`，决定最终运行参数
+- `分析流`：`main -> ProcessFilesConcurrent -> ProcessTarGz -> processLogFile -> PrintResults`
+- `合并流`：`main -> MergeCSVFiles -> mergeCSVFilesByType -> ExportMergedCSV`
+
+你可以把这个项目理解成“两阶段工具”：
+- 第一阶段：从原始 `.tar.gz` 访问日志生成统计结果
+- 第二阶段：把多次统计产生的 CSV 再做汇总分析
+
+如果你要，我下一步可以继续：
+1. 把这套流程整理成更正式的 Mermaid 流程图
+2. 基于这张关系图，继续做一次针对当前项目的代码 review
