@@ -164,15 +164,16 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 		merged.PprofSwitch = cmdPprofSwitch
 	}
 
-	// 合并过滤参数（命令行和配置文件都生效）
+	// 合并过滤参数（命令行参数覆盖配置文件参数）
+	// 如果命令行指定了过滤参数，则使用命令行参数；否则使用配置文件参数
 	if len(cmdSIPFilters) > 0 {
-		merged.SIPFilters = append(merged.SIPFilters, cmdSIPFilters...)
+		merged.SIPFilters = cmdSIPFilters
 	}
 	if len(cmdDIPFilters) > 0 {
-		merged.DIPFilters = append(merged.DIPFilters, cmdDIPFilters...)
+		merged.DIPFilters = cmdDIPFilters
 	}
 	if len(cmdDomainFilters) > 0 {
-		merged.DomainFilters = append(merged.DomainFilters, cmdDomainFilters...)
+		merged.DomainFilters = cmdDomainFilters
 	}
 
 	return merged, nil

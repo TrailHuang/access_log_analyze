@@ -148,6 +148,8 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 	for _, fp := range sortedFields {
 		fieldIndexSet[fp.name] = true
 	}
+	// 过滤字段的 enabled 标志只控制是否需要额外提取字段值
+	// 过滤逻辑始终需要执行，无论字段是否在统计字段中
 	for i := range filterFields {
 		if fieldIndexSet[filterFields[i].name] {
 			filterFields[i].enabled = false // 已在统计字段中，不需要额外提取
@@ -189,10 +191,20 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		if needFilter {
 			skip := false
 			for _, ff := range filterFields {
-				if !ff.enabled {
-					continue
+				// 获取字段值：如果字段已在统计字段中，从 positions 中提取；否则使用 getFieldString
+				var value string
+				if ff.enabled {
+					value = getFieldString(lineBytes, positions, ff.idx)
+				} else {
+					// 字段已在统计字段中，从 positions 中提取对应索引的值
+					for _, fp := range sortedFields {
+						if fp.name == ff.name {
+							value = getFieldString(lineBytes, positions, fp.idx)
+							break
+						}
+					}
 				}
-				value := getFieldString(lineBytes, positions, ff.idx)
+
 				switch ff.name {
 				case "sip":
 					if !MatchFilter(value, filters.SIPFilters) {
@@ -207,6 +219,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 						skip = true
 					}
 				}
+
 				if skip {
 					break
 				}
@@ -676,4 +689,3 @@ func ExportToCSV(statsList []*models.TrafficStats, fieldIndexes map[string]int, 
 	}
 	fmt.Println()
 }
-
