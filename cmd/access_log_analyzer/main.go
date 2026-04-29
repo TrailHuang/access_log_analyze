@@ -41,7 +41,7 @@ func main() {
 
 	// 如果是merge模式，直接处理并退出
 	if *mergeDir != "" {
-		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN, *duration); err != nil {
+		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN, *duration, *output); err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}
