@@ -32,6 +32,12 @@ func main() {
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
 	dipFilter := flag.String("dip", "", "目的IP过滤,支持逗号分隔多个值,支持*模糊匹配")
 	domainFilter := flag.String("domain", "", "域名过滤,支持逗号分隔多个值,支持*模糊匹配")
+	sipReverse := flag.Bool("sip_reverse", false, "源IP反向过滤：排除匹配的项")
+	dipReverse := flag.Bool("dip_reverse", false, "目的IP反向过滤：排除匹配的项")
+	domainReverse := flag.Bool("domain_reverse", false, "域名反向过滤：排除匹配的项")
+	sipFilterMode := flag.Int("sip_filter_mode", 0, "源IP空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
+	dipFilterMode := flag.Int("dip_filter_mode", 0, "目的IP空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
+	domainFilterMode := flag.Int("domain_filter_mode", 0, "域名空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	startTime := flag.String("start", "", "开始时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	endTime := flag.String("end", "", "结束时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	configFile := flag.String("config", "", "过滤器配置文件路径(JSON格式，不指定则使用config.json)")
@@ -85,7 +91,7 @@ func main() {
 	}
 
 	// 合并配置（命令行优先级高于配置文件）
-	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, *pprofSwitch)
+	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, *sipReverse, *dipReverse, *domainReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *pprofSwitch)
 	if err != nil {
 		fmt.Printf("错误: 合并配置失败: %v\n", err)
 		os.Exit(1)
@@ -131,9 +137,15 @@ func main() {
 
 	// 创建过滤器
 	filters := &models.LogFilters{
-		SIPFilters:    mergedConfig.SIPFilters,
-		DIPFilters:    mergedConfig.DIPFilters,
-		DomainFilters: mergedConfig.DomainFilters,
+		SIPFilters:       mergedConfig.SIPFilters,
+		DIPFilters:       mergedConfig.DIPFilters,
+		DomainFilters:    mergedConfig.DomainFilters,
+		SIPReverse:       mergedConfig.SIPReverse,
+		DIPReverse:       mergedConfig.DIPReverse,
+		DomainReverse:    mergedConfig.DomainReverse,
+		SIPFilterMode:    mergedConfig.SIPFilterMode,
+		DIPFilterMode:    mergedConfig.DIPFilterMode,
+		DomainFilterMode: mergedConfig.DomainFilterMode,
 	}
 
 	// 检查目录是否存在
@@ -160,13 +172,52 @@ func main() {
 	if filters.HasFilters() {
 		fmt.Printf("过滤条件:\n")
 		if len(filters.SIPFilters) > 0 {
-			fmt.Printf("  源IP: %v\n", filters.SIPFilters)
+			reverseMark := ""
+			if filters.SIPReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  源IP: %v%s\n", filters.SIPFilters, reverseMark)
 		}
 		if len(filters.DIPFilters) > 0 {
-			fmt.Printf("  目的IP: %v\n", filters.DIPFilters)
+			reverseMark := ""
+			if filters.DIPReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  目的IP: %v%s\n", filters.DIPFilters, reverseMark)
 		}
 		if len(filters.DomainFilters) > 0 {
-			fmt.Printf("  域名: %v\n", filters.DomainFilters)
+			reverseMark := ""
+			if filters.DomainReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  域名: %v%s\n", filters.DomainFilters, reverseMark)
+		}
+		if filters.SIPFilterMode != 0 {
+			modeName := "未知"
+			if filters.SIPFilterMode == 1 {
+				modeName = "仅统计空值"
+			} else if filters.SIPFilterMode == 2 {
+				modeName = "仅统计非空值"
+			}
+			fmt.Printf("  源IP: [%s]\n", modeName)
+		}
+		if filters.DIPFilterMode != 0 {
+			modeName := "未知"
+			if filters.DIPFilterMode == 1 {
+				modeName = "仅统计空值"
+			} else if filters.DIPFilterMode == 2 {
+				modeName = "仅统计非空值"
+			}
+			fmt.Printf("  目的IP: [%s]\n", modeName)
+		}
+		if filters.DomainFilterMode != 0 {
+			modeName := "未知"
+			if filters.DomainFilterMode == 1 {
+				modeName = "仅统计空值"
+			} else if filters.DomainFilterMode == 2 {
+				modeName = "仅统计非空值"
+			}
+			fmt.Printf("  域名: [%s]\n", modeName)
 		}
 	}
 	if mergedConfig.StartTime != "" || mergedConfig.EndTime != "" {

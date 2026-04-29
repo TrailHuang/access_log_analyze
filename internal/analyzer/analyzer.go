@@ -207,15 +207,15 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 
 				switch ff.name {
 				case "sip":
-					if !MatchFilter(value, filters.SIPFilters) {
+					if !MatchFilter(value, filters.SIPFilters, filters.SIPReverse) {
 						skip = true
 					}
 				case "dip":
-					if !MatchFilter(value, filters.DIPFilters) {
+					if !MatchFilter(value, filters.DIPFilters, filters.DIPReverse) {
 						skip = true
 					}
 				case "domain":
-					if !MatchFilter(value, filters.DomainFilters) {
+					if !MatchFilter(value, filters.DomainFilters, filters.DomainReverse) {
 						skip = true
 					}
 				}
@@ -224,6 +224,40 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 					break
 				}
 			}
+			if skip {
+				continue
+			}
+		}
+
+		// ---- 空值过滤模式阶段 ----
+		// FilterMode: 0=统计所有(默认), 1=只统计空值, 2=只统计非空值
+		if filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 {
+			skip := false
+
+			if filters.SIPFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 1)
+				isEmpty := value == "" || value == "-"
+				if (filters.SIPFilterMode == 1 && !isEmpty) || (filters.SIPFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && filters.DIPFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 2)
+				isEmpty := value == "" || value == "-"
+				if (filters.DIPFilterMode == 1 && !isEmpty) || (filters.DIPFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && filters.DomainFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 6)
+				isEmpty := value == "" || value == "-"
+				if (filters.DomainFilterMode == 1 && !isEmpty) || (filters.DomainFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
 			if skip {
 				continue
 			}

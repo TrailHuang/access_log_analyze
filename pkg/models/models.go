@@ -24,9 +24,18 @@ type LogFilters struct {
 	SIPFilters    []string
 	DIPFilters    []string
 	DomainFilters []string
+
+	SIPReverse    bool
+	DIPReverse    bool
+	DomainReverse bool
+
+	SIPFilterMode    int
+	DIPFilterMode    int
+	DomainFilterMode int
 }
 
 // HasFilters 检查是否有过滤条件
 func (f *LogFilters) HasFilters() bool {
-	return len(f.SIPFilters) > 0 || len(f.DIPFilters) > 0 || len(f.DomainFilters) > 0
+	return len(f.SIPFilters) > 0 || len(f.DIPFilters) > 0 || len(f.DomainFilters) > 0 ||
+		f.SIPFilterMode != 0 || f.DIPFilterMode != 0 || f.DomainFilterMode != 0
 }

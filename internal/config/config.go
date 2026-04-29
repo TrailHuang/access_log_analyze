@@ -13,6 +13,16 @@ type FilterConfig struct {
 	DIPFilters    []string `json:"dip_filters,omitempty"`
 	DomainFilters []string `json:"domain_filters,omitempty"`
 
+	// 反向开关：true表示排除配置的过滤项
+	SIPReverse    bool `json:"sip_reverse,omitempty"`
+	DIPReverse    bool `json:"dip_reverse,omitempty"`
+	DomainReverse bool `json:"domain_reverse,omitempty"`
+
+	// 空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值
+	SIPFilterMode    int `json:"sip_filter_mode,omitempty"`
+	DIPFilterMode    int `json:"dip_filter_mode,omitempty"`
+	DomainFilterMode int `json:"domain_filter_mode,omitempty"`
+
 	// 时间过滤参数
 	StartTime string `json:"start_time,omitempty"`
 	EndTime   string `json:"end_time,omitempty"`
@@ -71,61 +81,79 @@ func LoadFilterConfig(configPath string) (*FilterConfig, error) {
 // getDefaultConfig 返回内置默认配置
 func getDefaultConfig() *FilterConfig {
 	return &FilterConfig{
-		Fields:        "dip,domain",
-		TopN:          10,
-		SortBy:        "up,down",
-		CsvTop:        1000,
-		Workers:       4,
-		BatchSize:     0,
-		Output:        "output.csv",
-		LogPath:       "",
-		StartTime:     "",
-		EndTime:       "",
-		PprofSwitch:   false,
-		SIPFilters:    []string{},
-		DIPFilters:    []string{},
-		DomainFilters: []string{},
+		Fields:           "dip,domain",
+		TopN:             10,
+		SortBy:           "up,down",
+		CsvTop:           1000,
+		Workers:          4,
+		BatchSize:        0,
+		Output:           "output.csv",
+		LogPath:          "",
+		StartTime:        "",
+		EndTime:          "",
+		PprofSwitch:      false,
+		SIPFilters:       []string{},
+		DIPFilters:       []string{},
+		DomainFilters:    []string{},
+		SIPReverse:       false,
+		DIPReverse:       false,
+		DomainReverse:    false,
+		SIPFilterMode:    0,
+		DIPFilterMode:    0,
+		DomainFilterMode: 0,
 	}
 }
 
 // MergeConfig 合并配置文件和命令行参数，命令行参数优先级更高
-func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdPprofSwitch bool) (*FilterConfig, error) {
+func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdSIPReverse bool, cmdDIPReverse bool, cmdDomainReverse bool, cmdSIPFilterMode int, cmdDIPFilterMode int, cmdDomainFilterMode int, cmdPprofSwitch bool) (*FilterConfig, error) {
 	// 如果没有配置文件，直接返回命令行参数（如果命令行参数为空，则使用内置默认值）
 	if configFile == nil {
 		return &FilterConfig{
-			Fields:        getValueOrDefault(cmdFields, "dip,domain"),
-			TopN:          getIntOrDefault(cmdTopN, 10),
-			SortBy:        getValueOrDefault(cmdSortBy, "up"),
-			CsvTop:        getIntOrDefault(cmdCsvTop, 1000),
-			Workers:       getIntOrDefault(cmdWorkers, 4),
-			BatchSize:     getIntOrDefault(cmdBatchSize, 0),
-			Output:        cmdOutput,
-			LogPath:       cmdLogPath,
-			StartTime:     cmdStartTime,
-			EndTime:       cmdEndTime,
-			SIPFilters:    cmdSIPFilters,
-			DIPFilters:    cmdDIPFilters,
-			DomainFilters: cmdDomainFilters,
-			PprofSwitch:   cmdPprofSwitch,
+			Fields:           getValueOrDefault(cmdFields, "dip,domain"),
+			TopN:             getIntOrDefault(cmdTopN, 10),
+			SortBy:           getValueOrDefault(cmdSortBy, "up"),
+			CsvTop:           getIntOrDefault(cmdCsvTop, 1000),
+			Workers:          getIntOrDefault(cmdWorkers, 4),
+			BatchSize:        getIntOrDefault(cmdBatchSize, 0),
+			Output:           cmdOutput,
+			LogPath:          cmdLogPath,
+			StartTime:        cmdStartTime,
+			EndTime:          cmdEndTime,
+			SIPFilters:       cmdSIPFilters,
+			DIPFilters:       cmdDIPFilters,
+			DomainFilters:    cmdDomainFilters,
+			SIPReverse:       cmdSIPReverse,
+			DIPReverse:       cmdDIPReverse,
+			DomainReverse:    cmdDomainReverse,
+			SIPFilterMode:    cmdSIPFilterMode,
+			DIPFilterMode:    cmdDIPFilterMode,
+			DomainFilterMode: cmdDomainFilterMode,
+			PprofSwitch:      cmdPprofSwitch,
 		}, nil
 	}
 
 	// 使用配置文件作为默认值
 	merged := &FilterConfig{
-		Fields:        configFile.Fields,
-		TopN:          configFile.TopN,
-		SortBy:        configFile.SortBy,
-		CsvTop:        configFile.CsvTop,
-		Workers:       configFile.Workers,
-		BatchSize:     configFile.BatchSize,
-		Output:        configFile.Output,
-		LogPath:       configFile.LogPath,
-		StartTime:     configFile.StartTime,
-		EndTime:       configFile.EndTime,
-		SIPFilters:    configFile.SIPFilters,
-		DIPFilters:    configFile.DIPFilters,
-		DomainFilters: configFile.DomainFilters,
-		PprofSwitch:   configFile.PprofSwitch,
+		Fields:           configFile.Fields,
+		TopN:             configFile.TopN,
+		SortBy:           configFile.SortBy,
+		CsvTop:           configFile.CsvTop,
+		Workers:          configFile.Workers,
+		BatchSize:        configFile.BatchSize,
+		Output:           configFile.Output,
+		LogPath:          configFile.LogPath,
+		StartTime:        configFile.StartTime,
+		EndTime:          configFile.EndTime,
+		SIPFilters:       configFile.SIPFilters,
+		DIPFilters:       configFile.DIPFilters,
+		DomainFilters:    configFile.DomainFilters,
+		SIPReverse:       configFile.SIPReverse,
+		DIPReverse:       configFile.DIPReverse,
+		DomainReverse:    configFile.DomainReverse,
+		SIPFilterMode:    configFile.SIPFilterMode,
+		DIPFilterMode:    configFile.DIPFilterMode,
+		DomainFilterMode: configFile.DomainFilterMode,
+		PprofSwitch:      configFile.PprofSwitch,
 	}
 
 	// 命令行参数覆盖配置文件（命令行显式指定的优先）
@@ -174,6 +202,28 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	}
 	if len(cmdDomainFilters) > 0 {
 		merged.DomainFilters = cmdDomainFilters
+	}
+
+	// 合并反向开关（命令行参数覆盖配置文件参数）
+	if cmdSIPReverse {
+		merged.SIPReverse = cmdSIPReverse
+	}
+	if cmdDIPReverse {
+		merged.DIPReverse = cmdDIPReverse
+	}
+	if cmdDomainReverse {
+		merged.DomainReverse = cmdDomainReverse
+	}
+
+	// 合并空值过滤模式（命令行参数覆盖配置文件参数）
+	if cmdSIPFilterMode != 0 {
+		merged.SIPFilterMode = cmdSIPFilterMode
+	}
+	if cmdDIPFilterMode != 0 {
+		merged.DIPFilterMode = cmdDIPFilterMode
+	}
+	if cmdDomainFilterMode != 0 {
+		merged.DomainFilterMode = cmdDomainFilterMode
 	}
 
 	return merged, nil

@@ -10,17 +10,27 @@ import (
 var compiledRegexCache sync.Map
 
 // MatchFilter 检查值是否匹配过滤条件
-func MatchFilter(value string, filters []string) bool {
+// reverse=true时：排除匹配的项（反向过滤）
+// reverse=false时：保留匹配的项（正向过滤，默认行为）
+func MatchFilter(value string, filters []string, reverse bool) bool {
 	if len(filters) == 0 {
 		return true // 没有过滤条件,默认匹配
 	}
 
+	matched := false
 	for _, pattern := range filters {
 		if matchPattern(value, pattern) {
-			return true
+			matched = true
+			break
 		}
 	}
-	return false
+
+	// 反向过滤：匹配到的排除（返回false），未匹配的保留（返回true）
+	// 正向过滤：匹配到的保留（返回true），未匹配的排除（返回false）
+	if reverse {
+		return !matched
+	}
+	return matched
 }
 
 // matchPattern 匹配单个模式,支持*通配符
