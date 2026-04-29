@@ -30,7 +30,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 	// 写入表头
 	header := []string{"排名"}
 	header = append(header, fieldList...)
-	header = append(header, "上行流量(字节)", "上行流量", "上行Mbps", "上行占比", "下行流量(字节)", "下行流量", "下行Mbps", "下行占比", "总流量(字节)", "总流量", "总Mbps", "流数")
+	header = append(header, "上行流量(字节)", "上行流量", "上行Mbps", "上行占比", "下行流量(字节)", "下行流量", "下行Mbps", "下行占比", "总流量(字节)", "总流量", "总Mbps", "总流量占比", "流数")
 	writer.Write(header)
 
 	// 按第一个字段分组排名
@@ -106,13 +106,15 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		totalMbps := float64(record.FlowTotal*8) / durationSeconds / 1000000
 
 		// 计算占比：单字段模式按全局总计，多字段模式按分组汇总
-		var upPercent, downPercent string
+		var upPercent, downPercent, totalPercent string
 		if singleField {
 			upPercent = formatPercent(record.UpTotal, totalUp)
 			downPercent = formatPercent(record.DownTotal, totalDown)
+			totalPercent = formatPercent(record.FlowTotal, totalFlow)
 		} else {
 			upPercent = formatPercent(record.UpTotal, groupUpTotal[groupKey])
 			downPercent = formatPercent(record.DownTotal, groupDownTotal[groupKey])
+			totalPercent = formatPercent(record.FlowTotal, groupTotalBytes[groupKey])
 		}
 
 		row := []string{fmt.Sprintf("%d", rank)}
@@ -131,6 +133,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			fmt.Sprintf("%d", record.FlowTotal),
 			models.FormatBytes(record.FlowTotal),
 			fmt.Sprintf("%.2f", totalMbps),
+			totalPercent,
 			fmt.Sprintf("%d", record.FlowCount),
 		)
 		writer.Write(row)
@@ -166,6 +169,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			fmt.Sprintf("%d", totalFlow),
 			models.FormatBytes(totalFlow),
 			fmt.Sprintf("%.2f", totalFlowMbps),
+			"100.00%",
 			fmt.Sprintf("%d", totalFlowCount),
 		)
 		writer.Write(totalRow)
@@ -217,6 +221,7 @@ func writeGroupSummary(writer *csv.Writer, groupKey string, fieldList []string, 
 		fmt.Sprintf("%d", groupTotalBytes[groupKey]),
 		models.FormatBytes(groupTotalBytes[groupKey]),
 		fmt.Sprintf("%.2f", totalMbps),
+		"100.00%",
 		fmt.Sprintf("%d", groupFlowCount[groupKey]),
 	)
 	writer.Write(summaryRow)
