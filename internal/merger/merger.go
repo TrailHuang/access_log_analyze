@@ -213,6 +213,11 @@ func mergeCSVFilesByType(files []string, fieldList []string, sortType string, to
 		if err := extractTopNPerKey(records, fieldList, sortType, topN, durationSeconds); err != nil {
 			return fmt.Errorf("提取Top%d失败: %v", topN, err)
 		}
+	} else if len(fieldList) == 1 && topN > 0 {
+		fmt.Printf("  提取 Top%d...\n", topN)
+		if err := extractTopNSingleField(records, fieldList, sortType, topN, durationSeconds); err != nil {
+			return fmt.Errorf("提取Top%d失败: %v", topN, err)
+		}
 	}
 
 	return nil
@@ -302,6 +307,30 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 		label = sortType
 	}
 	fmt.Printf("  ✓ [%s] Top%d已导出: %s (共 %d 条记录, %d 个分组)\n", label, topN, outputFile, len(topNRecords), len(groups))
+
+	return nil
+}
+
+// extractTopNSingleField 单字段模式下提取TopN记录
+func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64) error {
+	limit := topN
+	if len(records) < limit {
+		limit = len(records)
+	}
+
+	topNRecords := records[:limit]
+
+	outputFile := fmt.Sprintf("top%d_%s.csv", topN, sortType)
+	if err := ExportMergedCSV(topNRecords, fieldList, outputFile, sortType, durationSeconds); err != nil {
+		return fmt.Errorf("导出TopN CSV失败: %v", err)
+	}
+
+	sortLabel := map[string]string{"up": "上行流量", "down": "下行流量", "total": "总流量"}
+	label := sortLabel[sortType]
+	if label == "" {
+		label = sortType
+	}
+	fmt.Printf("  ✓ [%s] Top%d已导出: %s (共 %d 条记录)\n", label, topN, outputFile, len(topNRecords))
 
 	return nil
 }

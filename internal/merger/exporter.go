@@ -13,6 +13,8 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		durationSeconds = 1 // 防止除零，默认1秒
 	}
 
+	singleField := len(fieldList) == 1
+
 	file, err := os.Create(outputFile)
 	if err != nil {
 		return fmt.Errorf("创建文件失败: %v", err)
@@ -74,6 +76,7 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 
 	groupRank := make(map[string]int) // 记录每个分组的当前排名
 	var lastGroupKey string            // 记录上一个分组的key
+	globalRank := 0                    // 单字段模式下的全局连续排名
 
 	for _, record := range records {
 		// 获取分组key（第一个字段的值）
@@ -82,23 +85,35 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 			groupKey = record.Fields[groupField]
 		}
 
-		// 检测到新的分组，写入上一个分组的汇总行
-		if lastGroupKey != "" && groupKey != lastGroupKey {
+		// 检测到新的分组，写入上一个分组的汇总行（仅多字段模式）
+		if !singleField && lastGroupKey != "" && groupKey != lastGroupKey {
 			writeGroupSummary(writer, lastGroupKey, fieldList, groupUpTotal, groupDownTotal, groupTotalBytes, groupFlowCount, durationSeconds)
 		}
 
-		// 计算该分组内的排名
-		groupRank[groupKey]++
-		rank := groupRank[groupKey]
+		// 计算排名：单字段模式用连续排名，多字段模式按分组排名
+		var rank int
+		if singleField {
+			globalRank++
+			rank = globalRank
+		} else {
+			groupRank[groupKey]++
+			rank = groupRank[groupKey]
+		}
 
 		// 计算Mbps (bits per second / 1,000,000)
 		upMbps := float64(record.UpTotal*8) / durationSeconds / 1000000
 		downMbps := float64(record.DownTotal*8) / durationSeconds / 1000000
 		totalMbps := float64(record.FlowTotal*8) / durationSeconds / 1000000
 
-		// 计算占比：当前行占所在分组汇总流量的比例
-		upPercent := formatPercent(record.UpTotal, groupUpTotal[groupKey])
-		downPercent := formatPercent(record.DownTotal, groupDownTotal[groupKey])
+		// 计算占比：单字段模式按全局总计，多字段模式按分组汇总
+		var upPercent, downPercent string
+		if singleField {
+			upPercent = formatPercent(record.UpTotal, totalUp)
+			downPercent = formatPercent(record.DownTotal, totalDown)
+		} else {
+			upPercent = formatPercent(record.UpTotal, groupUpTotal[groupKey])
+			downPercent = formatPercent(record.DownTotal, groupDownTotal[groupKey])
+		}
 
 		row := []string{fmt.Sprintf("%d", rank)}
 		for _, field := range fieldList {
@@ -124,35 +139,37 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		lastGroupKey = groupKey
 	}
 
-	// 写入最后一个分组的汇总行
-	if lastGroupKey != "" {
+	// 写入最后一个分组的汇总行（仅多字段模式）
+	if !singleField && lastGroupKey != "" {
 		writeGroupSummary(writer, lastGroupKey, fieldList, groupUpTotal, groupDownTotal, groupTotalBytes, groupFlowCount, durationSeconds)
 	}
 
-	// 写入总计行
-	totalUpMbps := float64(totalUp*8) / durationSeconds / 1000000
-	totalDownMbps := float64(totalDown*8) / durationSeconds / 1000000
-	totalFlowMbps := float64(totalFlow*8) / durationSeconds / 1000000
+	// 写入总计行（仅多字段模式）
+	if !singleField {
+		totalUpMbps := float64(totalUp*8) / durationSeconds / 1000000
+		totalDownMbps := float64(totalDown*8) / durationSeconds / 1000000
+		totalFlowMbps := float64(totalFlow*8) / durationSeconds / 1000000
 
-	totalRow := []string{"总计"}
-	for i := 0; i < len(fieldList); i++ {
-		totalRow = append(totalRow, "")
+		totalRow := []string{"总计"}
+		for i := 0; i < len(fieldList); i++ {
+			totalRow = append(totalRow, "")
+		}
+		totalRow = append(totalRow,
+			fmt.Sprintf("%d", totalUp),
+			models.FormatBytes(totalUp),
+			fmt.Sprintf("%.2f", totalUpMbps),
+			"100.00%",
+			fmt.Sprintf("%d", totalDown),
+			models.FormatBytes(totalDown),
+			fmt.Sprintf("%.2f", totalDownMbps),
+			"100.00%",
+			fmt.Sprintf("%d", totalFlow),
+			models.FormatBytes(totalFlow),
+			fmt.Sprintf("%.2f", totalFlowMbps),
+			fmt.Sprintf("%d", totalFlowCount),
+		)
+		writer.Write(totalRow)
 	}
-	totalRow = append(totalRow,
-		fmt.Sprintf("%d", totalUp),
-		models.FormatBytes(totalUp),
-		fmt.Sprintf("%.2f", totalUpMbps),
-		"100.00%",
-		fmt.Sprintf("%d", totalDown),
-		models.FormatBytes(totalDown),
-		fmt.Sprintf("%.2f", totalDownMbps),
-		"100.00%",
-		fmt.Sprintf("%d", totalFlow),
-		models.FormatBytes(totalFlow),
-		fmt.Sprintf("%.2f", totalFlowMbps),
-		fmt.Sprintf("%d", totalFlowCount),
-	)
-	writer.Write(totalRow)
 
 	sortLabel := map[string]string{"up": "上行流量", "down": "下行流量", "total": "总流量"}
 	label := sortLabel[sortType]
