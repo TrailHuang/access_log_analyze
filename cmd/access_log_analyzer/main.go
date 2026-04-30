@@ -28,6 +28,7 @@ func main() {
 	logPath := flag.String("log_path", "", "日志文件路径(目录或tar.gz文件)")
 	mergeDir := flag.String("merge", "", "合并目录: 将目录下所有up/down/total CSV文件按fields合并")
 	duration := flag.Float64("duration", 0, "持续时间(秒)，用于计算Mbps")
+	redistributeEmpty := flag.Bool("redistribute_empty", false, "merge模式下将空值记录的流量按比例分摊到其他记录")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
@@ -57,7 +58,7 @@ func main() {
 
 	// 如果是merge模式，直接处理并退出
 	if *mergeDir != "" {
-		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN, *duration, *output); err != nil {
+		if err := merger.MergeCSVFiles(*mergeDir, *fields, *topN, *duration, *output, *redistributeEmpty); err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}

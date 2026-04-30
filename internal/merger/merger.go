@@ -13,7 +13,7 @@ import (
 )
 
 // MergeCSVFiles 合并目录下所有up/down/total CSV文件
-func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds float64, output string) error {
+func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds float64, output string, redistributeEmpty bool) error {
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		return fmt.Errorf("目录不存在: %s", dirPath)
 	}
@@ -25,6 +25,9 @@ func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds f
 
 	fmt.Printf("开始合并目录: %s\n", dirPath)
 	fmt.Printf("合并字段: %s\n", fieldsStr)
+	if redistributeEmpty {
+		fmt.Printf("空值分摊: 开启\n")
+	}
 
 	var csvFiles []string
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
@@ -48,21 +51,21 @@ func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds f
 
 	if len(upFiles) > 0 {
 		fmt.Println("\n========== 合并 up 数据 ==========")
-		if err := mergeCSVFilesByType(upFiles, fieldList, "up", topN, durationSeconds, output); err != nil {
+		if err := mergeCSVFilesByType(upFiles, fieldList, "up", topN, durationSeconds, output, redistributeEmpty); err != nil {
 			return fmt.Errorf("合并up文件失败: %v", err)
 		}
 	}
 
 	if len(downFiles) > 0 {
 		fmt.Println("\n========== 合并 down 数据 ==========")
-		if err := mergeCSVFilesByType(downFiles, fieldList, "down", topN, durationSeconds, output); err != nil {
+		if err := mergeCSVFilesByType(downFiles, fieldList, "down", topN, durationSeconds, output, redistributeEmpty); err != nil {
 			return fmt.Errorf("合并down文件失败: %v", err)
 		}
 	}
 
 	if len(totalFiles) > 0 {
 		fmt.Println("\n========== 合并 total 数据 ==========")
-		if err := mergeCSVFilesByType(totalFiles, fieldList, "total", topN, durationSeconds, output); err != nil {
+		if err := mergeCSVFilesByType(totalFiles, fieldList, "total", topN, durationSeconds, output, redistributeEmpty); err != nil {
 			return fmt.Errorf("合并total文件失败: %v", err)
 		}
 	}
@@ -84,7 +87,7 @@ func classifyFiles(files []string) (upFiles, downFiles, totalFiles []string) {
 	return
 }
 
-func mergeCSVFilesByType(files []string, fieldList []string, sortType string, topN int, durationSeconds float64, output string) error {
+func mergeCSVFilesByType(files []string, fieldList []string, sortType string, topN int, durationSeconds float64, output string, redistributeEmpty bool) error {
 	aggregated := make(map[string]*models.CSVRecord)
 	filesProcessed := 0
 
@@ -210,12 +213,12 @@ func mergeCSVFilesByType(files []string, fieldList []string, sortType string, to
 
 	if len(fieldList) >= 2 {
 		fmt.Printf("  提取每个 %s 的 Top%d...\n", fieldList[0], topN)
-		if err := extractTopNPerKey(records, fieldList, sortType, topN, durationSeconds, output); err != nil {
+		if err := extractTopNPerKey(records, fieldList, sortType, topN, durationSeconds, output, redistributeEmpty); err != nil {
 			return fmt.Errorf("提取Top%d失败: %v", topN, err)
 		}
 	} else if len(fieldList) == 1 && topN > 0 {
 		fmt.Printf("  提取 Top%d...\n", topN)
-		if err := extractTopNSingleField(records, fieldList, sortType, topN, durationSeconds, output); err != nil {
+		if err := extractTopNSingleField(records, fieldList, sortType, topN, durationSeconds, output, redistributeEmpty); err != nil {
 			return fmt.Errorf("提取Top%d失败: %v", topN, err)
 		}
 	}
@@ -234,12 +237,13 @@ func parseInt64(record []string, fieldIndex map[string]int, fieldName string) in
 	return 0
 }
 
-func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64, output string) error {
+func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64, output string, redistributeEmpty bool) error {
 	if len(fieldList) < 2 {
 		return fmt.Errorf("至少需要2个字段才能提取TopN")
 	}
 
 	groupField := fieldList[0]
+
 	groups := make(map[string][]*models.CSVRecord)
 	for _, record := range records {
 		key := record.Fields[groupField]
@@ -252,12 +256,19 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 		for i, r := range groupRecords {
 			copiedRecords[i] = &models.CSVRecord{
 				Key:       r.Key,
-				Fields:    r.Fields,
+				Fields:    make(map[string]string),
 				UpTotal:   r.UpTotal,
 				DownTotal: r.DownTotal,
 				FlowTotal: r.FlowTotal,
 				FlowCount: r.FlowCount,
 			}
+			for k, v := range r.Fields {
+				copiedRecords[i].Fields[k] = v
+			}
+		}
+
+		if redistributeEmpty {
+			copiedRecords = redistributeEmptyRecords(copiedRecords, fieldList)
 		}
 
 		sort.Slice(copiedRecords, func(i, j int) bool {
@@ -312,7 +323,7 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 }
 
 // extractTopNSingleField 单字段模式下提取TopN记录
-func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64, output string) error {
+func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64, output string, redistributeEmpty bool) error {
 	limit := topN
 	if len(records) < limit {
 		limit = len(records)
@@ -333,4 +344,84 @@ func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sor
 	fmt.Printf("  ✓ [%s] Top%d已导出: %s (共 %d 条记录)\n", label, topN, outputFile, len(topNRecords))
 
 	return nil
+}
+
+// redistributeEmptyRecords 将空值记录的流量按比例分摊到其他记录上
+// 空值判断基于fieldList中除第一个字段外的其他字段（如domain字段为"-"或空）
+func redistributeEmptyRecords(records []*models.CSVRecord, fieldList []string) []*models.CSVRecord {
+	if len(fieldList) < 2 {
+		return records
+	}
+
+	emptyField := fieldList[1]
+
+	var emptyRecords []*models.CSVRecord
+	var nonEmptyRecords []*models.CSVRecord
+
+	for _, r := range records {
+		value := r.Fields[emptyField]
+		if value == "" || value == "-" {
+			emptyRecords = append(emptyRecords, r)
+		} else {
+			nonEmptyRecords = append(nonEmptyRecords, r)
+		}
+	}
+
+	if len(emptyRecords) == 0 || len(nonEmptyRecords) == 0 {
+		return records
+	}
+
+	totalUp := int64(0)
+	totalDown := int64(0)
+	totalFlow := int64(0)
+	totalCount := int64(0)
+	for _, r := range emptyRecords {
+		totalUp += r.UpTotal
+		totalDown += r.DownTotal
+		totalFlow += r.FlowTotal
+		totalCount += r.FlowCount
+	}
+
+	nonEmptyTotal := int64(0)
+	switch {
+	case totalUp > 0:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.UpTotal
+		}
+	case totalDown > 0:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.DownTotal
+		}
+	default:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.FlowTotal
+		}
+	}
+
+	if nonEmptyTotal == 0 {
+		return records
+	}
+
+	for range emptyRecords {
+		for _, rec := range nonEmptyRecords {
+			var ratio float64
+			if totalUp > 0 {
+				ratio = float64(rec.UpTotal) / float64(nonEmptyTotal)
+			} else if totalDown > 0 {
+				ratio = float64(rec.DownTotal) / float64(nonEmptyTotal)
+			} else {
+				ratio = float64(rec.FlowTotal) / float64(nonEmptyTotal)
+			}
+
+			rec.UpTotal += int64(float64(totalUp) * ratio)
+			rec.DownTotal += int64(float64(totalDown) * ratio)
+			rec.FlowTotal += int64(float64(totalFlow) * ratio)
+			rec.FlowCount += int64(float64(totalCount) * ratio)
+		}
+	}
+
+	fmt.Printf("  空值分摊: 将 %d 条空值记录分摊到 %d 条非空记录 (上行: %d 字节, 下行: %d 字节, 总流量: %d 字节, 流数: %d)\n",
+		len(emptyRecords), len(nonEmptyRecords), totalUp, totalDown, totalFlow, totalCount)
+
+	return nonEmptyRecords
 }
