@@ -144,6 +144,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		{"domain", 6, len(filters.DomainFilters) > 0},
 		{"sport", 4, len(filters.SportFilters) > 0},
 		{"dport", 5, len(filters.DportFilters) > 0},
+		{"url", 7, len(filters.URLFilters) > 0},
 	}
 	// 检查过滤字段是否已在统计字段中
 	fieldIndexSet := make(map[string]bool, len(sortedFields))
@@ -158,9 +159,9 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		}
 	}
 	needFilter := len(filters.SIPFilters) > 0 || len(filters.DIPFilters) > 0 || len(filters.DomainFilters) > 0 ||
-		len(filters.SportFilters) > 0 || len(filters.DportFilters) > 0 ||
+		len(filters.SportFilters) > 0 || len(filters.DportFilters) > 0 || len(filters.URLFilters) > 0 ||
 		filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 ||
-		filters.SportFilterMode != 0 || filters.DportFilterMode != 0
+		filters.SportFilterMode != 0 || filters.DportFilterMode != 0 || filters.URLFilterMode != 0
 
 	// 预分配 field positions 缓冲区，避免每行分配
 	positions := make([]fieldPos, 0, 32)
@@ -231,6 +232,10 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 					if !MatchFilter(value, filters.DportFilters, filters.DportReverse) {
 						skip = true
 					}
+				case "url":
+					if !MatchURLFilter(value, filters) {
+						skip = true
+					}
 				}
 
 				if skip {
@@ -244,7 +249,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 
 		// ---- 空值过滤模式阶段 ----
 		// FilterMode: 0=统计所有(默认), 1=只统计空值, 2=只统计非空值
-		if filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 {
+		if filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 || filters.SportFilterMode != 0 || filters.DportFilterMode != 0 || filters.URLFilterMode != 0 {
 			skip := false
 
 			if filters.SIPFilterMode != 0 {
@@ -283,6 +288,14 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 				value := getFieldString(lineBytes, positions, 5)
 				isEmpty := value == "" || value == "-"
 				if (filters.DportFilterMode == 1 && !isEmpty) || (filters.DportFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && filters.URLFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 7)
+				isEmpty := value == "" || value == "-"
+				if (filters.URLFilterMode == 1 && !isEmpty) || (filters.URLFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}

@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"access_log_analyze/pkg/models"
+	"encoding/base64"
 	"regexp"
 	"strings"
 	"sync"
@@ -70,4 +72,35 @@ func ParseFilterPatterns(filterStr string) []string {
 		}
 	}
 	return result
+}
+
+// MatchURLFilter 匹配URL过滤条件，支持base64解码后匹配正则
+func MatchURLFilter(base64Value string, filters *models.LogFilters) bool {
+	if len(filters.URLFilters) == 0 {
+		return true // 没有过滤条件,默认匹配
+	}
+
+	// base64解码
+	decodedBytes, err := base64.StdEncoding.DecodeString(base64Value)
+	if err != nil {
+		// 解码失败，根据反向开关决定返回值
+		return !filters.URLReverse
+	}
+	decodedURL := string(decodedBytes)
+
+	// 匹配预编译的正则表达式
+	matched := false
+	for _, re := range filters.URLCompiledRegex {
+		if re.MatchString(decodedURL) {
+			matched = true
+			break
+		}
+	}
+
+	// 反向过滤：匹配到的排除（返回false），未匹配的保留（返回true）
+	// 正向过滤：匹配到的保留（返回true），未匹配的排除（返回false）
+	if filters.URLReverse {
+		return !matched
+	}
+	return matched
 }

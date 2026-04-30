@@ -14,6 +14,7 @@ type FilterConfig struct {
 	DomainFilters []string `json:"domain_filters,omitempty"`
 	SportFilters  []string `json:"sport_filters,omitempty"`
 	DportFilters  []string `json:"dport_filters,omitempty"`
+	URLFilters    []string `json:"url_filters,omitempty"`
 
 	// 反向开关：true表示排除配置的过滤项
 	SIPReverse    bool `json:"sip_reverse,omitempty"`
@@ -21,6 +22,7 @@ type FilterConfig struct {
 	DomainReverse bool `json:"domain_reverse,omitempty"`
 	SportReverse  bool `json:"sport_reverse,omitempty"`
 	DportReverse  bool `json:"dport_reverse,omitempty"`
+	URLReverse    bool `json:"url_reverse,omitempty"`
 
 	// 空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值
 	SIPFilterMode    int `json:"sip_filter_mode,omitempty"`
@@ -28,6 +30,7 @@ type FilterConfig struct {
 	DomainFilterMode int `json:"domain_filter_mode,omitempty"`
 	SportFilterMode  int `json:"sport_filter_mode,omitempty"`
 	DportFilterMode  int `json:"dport_filter_mode,omitempty"`
+	URLFilterMode    int `json:"url_filter_mode,omitempty"`
 
 	// 时间过滤参数
 	StartTime string `json:"start_time,omitempty"`
@@ -103,21 +106,24 @@ func getDefaultConfig() *FilterConfig {
 		DomainFilters:    []string{},
 		SportFilters:     []string{},
 		DportFilters:     []string{},
+		URLFilters:       []string{},
 		SIPReverse:       false,
 		DIPReverse:       false,
 		DomainReverse:    false,
 		SportReverse:     false,
 		DportReverse:     false,
+		URLReverse:       false,
 		SIPFilterMode:    0,
 		DIPFilterMode:    0,
 		DomainFilterMode: 0,
 		SportFilterMode:  0,
 		DportFilterMode:  0,
+		URLFilterMode:    0,
 	}
 }
 
 // MergeConfig 合并配置文件和命令行参数，命令行参数优先级更高
-func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdSportFilters []string, cmdDportFilters []string, cmdSIPReverse bool, cmdDIPReverse bool, cmdDomainReverse bool, cmdSportReverse bool, cmdDportReverse bool, cmdSIPFilterMode int, cmdDIPFilterMode int, cmdDomainFilterMode int, cmdSportFilterMode int, cmdDportFilterMode int, cmdPprofSwitch bool) (*FilterConfig, error) {
+func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdSportFilters []string, cmdDportFilters []string, cmdURLFilters []string, cmdSIPReverse bool, cmdDIPReverse bool, cmdDomainReverse bool, cmdSportReverse bool, cmdDportReverse bool, cmdURLReverse bool, cmdSIPFilterMode int, cmdDIPFilterMode int, cmdDomainFilterMode int, cmdSportFilterMode int, cmdDportFilterMode int, cmdURLFilterMode int, cmdPprofSwitch bool) (*FilterConfig, error) {
 	// 如果没有配置文件，直接返回命令行参数（如果命令行参数为空，则使用内置默认值）
 	if configFile == nil {
 		return &FilterConfig{
@@ -136,16 +142,19 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 			DomainFilters:    cmdDomainFilters,
 			SportFilters:     cmdSportFilters,
 			DportFilters:     cmdDportFilters,
+			URLFilters:       cmdURLFilters,
 			SIPReverse:       cmdSIPReverse,
 			DIPReverse:       cmdDIPReverse,
 			DomainReverse:    cmdDomainReverse,
 			SportReverse:     cmdSportReverse,
 			DportReverse:     cmdDportReverse,
+			URLReverse:       cmdURLReverse,
 			SIPFilterMode:    cmdSIPFilterMode,
 			DIPFilterMode:    cmdDIPFilterMode,
 			DomainFilterMode: cmdDomainFilterMode,
 			SportFilterMode:  cmdSportFilterMode,
 			DportFilterMode:  cmdDportFilterMode,
+			URLFilterMode:    cmdURLFilterMode,
 			PprofSwitch:      cmdPprofSwitch,
 		}, nil
 	}
@@ -167,16 +176,19 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 		DomainFilters:    configFile.DomainFilters,
 		SportFilters:     configFile.SportFilters,
 		DportFilters:     configFile.DportFilters,
+		URLFilters:       configFile.URLFilters,
 		SIPReverse:       configFile.SIPReverse,
 		DIPReverse:       configFile.DIPReverse,
 		DomainReverse:    configFile.DomainReverse,
 		SportReverse:     configFile.SportReverse,
 		DportReverse:     configFile.DportReverse,
+		URLReverse:       configFile.URLReverse,
 		SIPFilterMode:    configFile.SIPFilterMode,
 		DIPFilterMode:    configFile.DIPFilterMode,
 		DomainFilterMode: configFile.DomainFilterMode,
 		SportFilterMode:  configFile.SportFilterMode,
 		DportFilterMode:  configFile.DportFilterMode,
+		URLFilterMode:    configFile.URLFilterMode,
 		PprofSwitch:      configFile.PprofSwitch,
 	}
 
@@ -233,6 +245,9 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	if len(cmdDportFilters) > 0 {
 		merged.DportFilters = cmdDportFilters
 	}
+	if len(cmdURLFilters) > 0 {
+		merged.URLFilters = cmdURLFilters
+	}
 
 	// 合并反向开关（命令行参数覆盖配置文件参数）
 	if cmdSIPReverse {
@@ -250,6 +265,9 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	if cmdDportReverse {
 		merged.DportReverse = cmdDportReverse
 	}
+	if cmdURLReverse {
+		merged.URLReverse = cmdURLReverse
+	}
 
 	// 合并空值过滤模式（命令行参数覆盖配置文件参数）
 	if cmdSIPFilterMode != 0 {
@@ -266,6 +284,9 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	}
 	if cmdDportFilterMode != 0 {
 		merged.DportFilterMode = cmdDportFilterMode
+	}
+	if cmdURLFilterMode != 0 {
+		merged.URLFilterMode = cmdURLFilterMode
 	}
 
 	return merged, nil

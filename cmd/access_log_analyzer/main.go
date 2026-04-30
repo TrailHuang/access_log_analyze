@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/pprof"
 	"strings"
 
@@ -34,16 +35,19 @@ func main() {
 	domainFilter := flag.String("domain", "", "域名过滤,支持逗号分隔多个值,支持*模糊匹配")
 	sportFilter := flag.String("sport", "", "源端口过滤,支持逗号分隔多个值,支持*模糊匹配")
 	dportFilter := flag.String("dport", "", "目的端口过滤,支持逗号分隔多个值,支持*模糊匹配")
+	urlFilter := flag.String("url", "", "URL过滤,支持逗号分隔多个正则表达式,匹配base64解码后的URL")
 	sipReverse := flag.Bool("sip_reverse", false, "源IP反向过滤：排除匹配的项")
 	dipReverse := flag.Bool("dip_reverse", false, "目的IP反向过滤：排除匹配的项")
 	domainReverse := flag.Bool("domain_reverse", false, "域名反向过滤：排除匹配的项")
 	sportReverse := flag.Bool("sport_reverse", false, "源端口反向过滤：排除匹配的项")
 	dportReverse := flag.Bool("dport_reverse", false, "目的端口反向过滤：排除匹配的项")
+	urlReverse := flag.Bool("url_reverse", false, "URL反向过滤：排除匹配的项")
 	sipFilterMode := flag.Int("sip_filter_mode", 0, "源IP空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	dipFilterMode := flag.Int("dip_filter_mode", 0, "目的IP空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	domainFilterMode := flag.Int("domain_filter_mode", 0, "域名空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	sportFilterMode := flag.Int("sport_filter_mode", 0, "源端口空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	dportFilterMode := flag.Int("dport_filter_mode", 0, "目的端口空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
+	urlFilterMode := flag.Int("url_filter_mode", 0, "URL空值过滤模式：0=统计所有(默认), 1=只统计空值, 2=只统计非空值")
 	startTime := flag.String("start", "", "开始时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	endTime := flag.String("end", "", "结束时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	configFile := flag.String("config", "", "过滤器配置文件路径(JSON格式，不指定则使用config.json)")
@@ -90,6 +94,7 @@ func main() {
 	cmdDomainFilters := analyzer.ParseFilterPatterns(*domainFilter)
 	cmdSportFilters := analyzer.ParseFilterPatterns(*sportFilter)
 	cmdDportFilters := analyzer.ParseFilterPatterns(*dportFilter)
+	cmdURLFilters := analyzer.ParseFilterPatterns(*urlFilter)
 
 	// 加载配置文件
 	filterConfig, err := config.LoadFilterConfig(*configFile)
@@ -99,7 +104,7 @@ func main() {
 	}
 
 	// 合并配置（命令行优先级高于配置文件）
-	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *pprofSwitch)
+	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, cmdURLFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *urlReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *urlFilterMode, *pprofSwitch)
 	if err != nil {
 		fmt.Printf("错误: 合并配置失败: %v\n", err)
 		os.Exit(1)
@@ -150,16 +155,32 @@ func main() {
 		DomainFilters:    mergedConfig.DomainFilters,
 		SportFilters:     mergedConfig.SportFilters,
 		DportFilters:     mergedConfig.DportFilters,
+		URLFilters:       mergedConfig.URLFilters,
 		SIPReverse:       mergedConfig.SIPReverse,
 		DIPReverse:       mergedConfig.DIPReverse,
 		DomainReverse:    mergedConfig.DomainReverse,
 		SportReverse:     mergedConfig.SportReverse,
 		DportReverse:     mergedConfig.DportReverse,
+		URLReverse:       mergedConfig.URLReverse,
 		SIPFilterMode:    mergedConfig.SIPFilterMode,
 		DIPFilterMode:    mergedConfig.DIPFilterMode,
 		DomainFilterMode: mergedConfig.DomainFilterMode,
 		SportFilterMode:  mergedConfig.SportFilterMode,
 		DportFilterMode:  mergedConfig.DportFilterMode,
+		URLFilterMode:    mergedConfig.URLFilterMode,
+	}
+
+	// 预编译URL正则表达式
+	if len(filters.URLFilters) > 0 {
+		filters.URLCompiledRegex = make([]*regexp.Regexp, 0, len(filters.URLFilters))
+		for _, pattern := range filters.URLFilters {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				fmt.Printf("错误: 编译URL正则表达式失败 [%s]: %v\n", pattern, err)
+				os.Exit(1)
+			}
+			filters.URLCompiledRegex = append(filters.URLCompiledRegex, re)
+		}
 	}
 
 	// 检查目录是否存在
@@ -220,6 +241,13 @@ func main() {
 			}
 			fmt.Printf("  目的端口: %v%s\n", filters.DportFilters, reverseMark)
 		}
+		if len(filters.URLFilters) > 0 {
+			reverseMark := ""
+			if filters.URLReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  URL: %v%s\n", filters.URLFilters, reverseMark)
+		}
 		if filters.SIPFilterMode != 0 {
 			modeName := "未知"
 			if filters.SIPFilterMode == 1 {
@@ -264,6 +292,15 @@ func main() {
 				modeName = "仅统计非空值"
 			}
 			fmt.Printf("  目的端口: [%s]\n", modeName)
+		}
+		if filters.URLFilterMode != 0 {
+			modeName := "未知"
+			if filters.URLFilterMode == 1 {
+				modeName = "仅统计空值"
+			} else if filters.URLFilterMode == 2 {
+				modeName = "仅统计非空值"
+			}
+			fmt.Printf("  URL: [%s]\n", modeName)
 		}
 	}
 	if mergedConfig.StartTime != "" || mergedConfig.EndTime != "" {
