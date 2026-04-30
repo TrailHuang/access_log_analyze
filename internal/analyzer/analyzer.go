@@ -142,6 +142,8 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		{"sip", 1, len(filters.SIPFilters) > 0},
 		{"dip", 2, len(filters.DIPFilters) > 0},
 		{"domain", 6, len(filters.DomainFilters) > 0},
+		{"sport", 4, len(filters.SportFilters) > 0},
+		{"dport", 5, len(filters.DportFilters) > 0},
 	}
 	// 检查过滤字段是否已在统计字段中
 	fieldIndexSet := make(map[string]bool, len(sortedFields))
@@ -155,7 +157,10 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 			filterFields[i].enabled = false // 已在统计字段中，不需要额外提取
 		}
 	}
-	needFilter := len(filters.SIPFilters) > 0 || len(filters.DIPFilters) > 0 || len(filters.DomainFilters) > 0
+	needFilter := len(filters.SIPFilters) > 0 || len(filters.DIPFilters) > 0 || len(filters.DomainFilters) > 0 ||
+		len(filters.SportFilters) > 0 || len(filters.DportFilters) > 0 ||
+		filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 ||
+		filters.SportFilterMode != 0 || filters.DportFilterMode != 0
 
 	// 预分配 field positions 缓冲区，避免每行分配
 	positions := make([]fieldPos, 0, 32)
@@ -218,6 +223,14 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 					if !MatchFilter(value, filters.DomainFilters, filters.DomainReverse) {
 						skip = true
 					}
+				case "sport":
+					if !MatchFilter(value, filters.SportFilters, filters.SportReverse) {
+						skip = true
+					}
+				case "dport":
+					if !MatchFilter(value, filters.DportFilters, filters.DportReverse) {
+						skip = true
+					}
 				}
 
 				if skip {
@@ -254,6 +267,22 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 				value := getFieldString(lineBytes, positions, 6)
 				isEmpty := value == "" || value == "-"
 				if (filters.DomainFilterMode == 1 && !isEmpty) || (filters.DomainFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && filters.SportFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 4)
+				isEmpty := value == "" || value == "-"
+				if (filters.SportFilterMode == 1 && !isEmpty) || (filters.SportFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && filters.DportFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 5)
+				isEmpty := value == "" || value == "-"
+				if (filters.DportFilterMode == 1 && !isEmpty) || (filters.DportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
