@@ -4,6 +4,7 @@ import (
 	"access_log_analyze/internal/analyzer"
 	"access_log_analyze/internal/config"
 	"access_log_analyze/internal/merger"
+	"access_log_analyze/internal/version"
 	"access_log_analyze/pkg/models"
 	"access_log_analyze/pkg/storage"
 	"flag"
@@ -56,8 +57,15 @@ func main() {
 	endTime := flag.String("end", "", "结束时间(格式: YYYYMMDDHHmmss，精确到秒)")
 	configFile := flag.String("config", "", "过滤器配置文件路径(JSON格式，不指定则使用config.json)")
 	pprofSwitch := flag.Bool("pprof", false, "是否开启性能分析")
+	showVersion := flag.Bool("version", false, "显示版本号和编译时间")
 
 	flag.Parse()
+
+	// 显示版本信息
+	if *showVersion {
+		fmt.Printf("access_log_analyzer version %s (built at %s)\n", version.Version, version.BuildTime)
+		return
+	}
 
 	// 如果是merge模式，直接处理并退出
 	if *mergeDir != "" {

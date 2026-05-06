@@ -7,11 +7,11 @@ GOFLAGS=-v
 
 # 版本信息(可通过命令行覆盖)
 VERSION?=1.0.0
-BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
+BUILD_TIME=$(shell date '+%Y-%m-%d_%H:%M:%S')
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 # ldflags 用于嵌入版本信息
-LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
+LDFLAGS=-ldflags "-X access_log_analyze/internal/version.Version=$(VERSION) -X access_log_analyze/internal/version.BuildTime=$(BUILD_TIME)"
 
 # 默认目标：编译双架构
 .PHONY: all
