@@ -147,3 +147,5 @@ build/access_log_analyzer
 .trae/rules/git-commit-message.md
 build/access_log_analyzer_linux_amd64
 build/access_log_analyzer_linux_arm64
+build/access_log_analyzer_new
+20260415_19_24_new.tar.gz
