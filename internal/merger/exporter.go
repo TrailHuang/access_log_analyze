@@ -156,33 +156,31 @@ func ExportMergedCSV(records []*models.CSVRecord, fieldList []string, outputFile
 		writeGroupSummary(writer, lastGroupKey, fieldList, groupUpTotal, groupDownTotal, groupTotalBytes, groupFlowCount, durationSeconds)
 	}
 
-	// 写入总计行（仅多字段模式）
-	if !singleField {
-		totalUpGbps := float64(totalUp*8) / durationSeconds / 1000000000
-		totalDownGbps := float64(totalDown*8) / durationSeconds / 1000000000
-		totalFlowGbps := float64(totalFlow*8) / durationSeconds / 1000000000
+	// 写入总计行（单字段和多字段模式都需要）
+	totalUpGbps := float64(totalUp*8) / durationSeconds / 1000000000
+	totalDownGbps := float64(totalDown*8) / durationSeconds / 1000000000
+	totalFlowGbps := float64(totalFlow*8) / durationSeconds / 1000000000
 
-		totalRow := []string{"总计"}
-		for i := 0; i < len(fieldList); i++ {
-			totalRow = append(totalRow, "")
-		}
-		totalRow = append(totalRow,
-			fmt.Sprintf("%d", totalUp),
-			models.FormatBytes(totalUp),
-			fmt.Sprintf("%.2f", totalUpGbps),
-			"100.00%",
-			fmt.Sprintf("%d", totalDown),
-			models.FormatBytes(totalDown),
-			fmt.Sprintf("%.2f", totalDownGbps),
-			"100.00%",
-			fmt.Sprintf("%d", totalFlow),
-			models.FormatBytes(totalFlow),
-			fmt.Sprintf("%.2f", totalFlowGbps),
-			"100.00%",
-			fmt.Sprintf("%d", totalFlowCount),
-		)
-		writer.Write(totalRow)
+	totalRow := []string{"总计"}
+	for i := 0; i < len(fieldList); i++ {
+		totalRow = append(totalRow, "")
 	}
+	totalRow = append(totalRow,
+		fmt.Sprintf("%d", totalUp),
+		models.FormatBytes(totalUp),
+		fmt.Sprintf("%.2f", totalUpGbps),
+		"100.00%",
+		fmt.Sprintf("%d", totalDown),
+		models.FormatBytes(totalDown),
+		fmt.Sprintf("%.2f", totalDownGbps),
+		"100.00%",
+		fmt.Sprintf("%d", totalFlow),
+		models.FormatBytes(totalFlow),
+		fmt.Sprintf("%.2f", totalFlowGbps),
+		"100.00%",
+		fmt.Sprintf("%d", totalFlowCount),
+	)
+	writer.Write(totalRow)
 
 	sortLabel := map[string]string{"up": "上行流量", "down": "下行流量", "total": "总流量"}
 	label := sortLabel[sortType]

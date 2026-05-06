@@ -324,6 +324,10 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 
 // extractTopNSingleField 单字段模式下提取TopN记录
 func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sortType string, topN int, durationSeconds float64, output string, redistributeEmpty bool) error {
+	if redistributeEmpty && len(records) > 0 {
+		records = redistributeEmptyRecordsSingle(records, fieldList)
+	}
+
 	limit := topN
 	if len(records) < limit {
 		limit = len(records)
@@ -344,6 +348,86 @@ func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sor
 	fmt.Printf("  ✓ [%s] Top%d已导出: %s (共 %d 条记录)\n", label, topN, outputFile, len(topNRecords))
 
 	return nil
+}
+
+// redistributeEmptyRecordsSingle 单字段模式下将空值记录的流量按比例分摊到其他记录上
+// 空值判断基于fieldList中的字段（如dip字段为"-"或空）
+func redistributeEmptyRecordsSingle(records []*models.CSVRecord, fieldList []string) []*models.CSVRecord {
+	if len(fieldList) < 1 {
+		return records
+	}
+
+	emptyField := fieldList[0]
+
+	var emptyRecords []*models.CSVRecord
+	var nonEmptyRecords []*models.CSVRecord
+
+	for _, r := range records {
+		value := r.Fields[emptyField]
+		if value == "" || value == "-" {
+			emptyRecords = append(emptyRecords, r)
+		} else {
+			nonEmptyRecords = append(nonEmptyRecords, r)
+		}
+	}
+
+	if len(emptyRecords) == 0 || len(nonEmptyRecords) == 0 {
+		return records
+	}
+
+	totalUp := int64(0)
+	totalDown := int64(0)
+	totalFlow := int64(0)
+	totalCount := int64(0)
+	for _, r := range emptyRecords {
+		totalUp += r.UpTotal
+		totalDown += r.DownTotal
+		totalFlow += r.FlowTotal
+		totalCount += r.FlowCount
+	}
+
+	nonEmptyTotal := int64(0)
+	switch {
+	case totalUp > 0:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.UpTotal
+		}
+	case totalDown > 0:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.DownTotal
+		}
+	default:
+		for _, r := range nonEmptyRecords {
+			nonEmptyTotal += r.FlowTotal
+		}
+	}
+
+	if nonEmptyTotal == 0 {
+		return records
+	}
+
+	for range emptyRecords {
+		for _, rec := range nonEmptyRecords {
+			var ratio float64
+			if totalUp > 0 {
+				ratio = float64(rec.UpTotal) / float64(nonEmptyTotal)
+			} else if totalDown > 0 {
+				ratio = float64(rec.DownTotal) / float64(nonEmptyTotal)
+			} else {
+				ratio = float64(rec.FlowTotal) / float64(nonEmptyTotal)
+			}
+
+			rec.UpTotal += int64(float64(totalUp) * ratio)
+			rec.DownTotal += int64(float64(totalDown) * ratio)
+			rec.FlowTotal += int64(float64(totalFlow) * ratio)
+			rec.FlowCount += int64(float64(totalCount) * ratio)
+		}
+	}
+
+	fmt.Printf("  空值分摊: 将 %d 条空值记录分摊到 %d 条非空记录 (上行: %d 字节, 下行: %d 字节, 总流量: %d 字节, 流数: %d)\n",
+		len(emptyRecords), len(nonEmptyRecords), totalUp, totalDown, totalFlow, totalCount)
+
+	return nonEmptyRecords
 }
 
 // redistributeEmptyRecords 将空值记录的流量按比例分摊到其他记录上
