@@ -9,6 +9,7 @@
   "start_time": "",
   "end_time": "",
   "pprof_switch": false,
+  "flush_threshold": 500000,
   "sip_filters": [
   ],
   "dip_filters": [
@@ -20,7 +21,6 @@
   "dport_filters": [
   ],
   "url_filters": [
-    "\/files"
   ],
   "sip_reverse": false,
   "dip_reverse": false,

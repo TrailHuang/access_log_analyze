@@ -48,6 +48,9 @@ type FilterConfig struct {
 
 	// 性能分析参数
 	PprofSwitch bool `json:"pprof_switch,omitempty"` // 是否开启性能分析，默认false
+
+	// BadgerDB存储参数
+	FlushThreshold int `json:"flush_threshold,omitempty"` // BadgerDB本地map flush阈值(key数量)，默认500000
 }
 
 // LoadFilterConfig 从配置文件加载过滤规则
@@ -119,11 +122,12 @@ func getDefaultConfig() *FilterConfig {
 		SportFilterMode:  0,
 		DportFilterMode:  0,
 		URLFilterMode:    0,
+		FlushThreshold:   500000,
 	}
 }
 
 // MergeConfig 合并配置文件和命令行参数，命令行参数优先级更高
-func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdSportFilters []string, cmdDportFilters []string, cmdURLFilters []string, cmdSIPReverse bool, cmdDIPReverse bool, cmdDomainReverse bool, cmdSportReverse bool, cmdDportReverse bool, cmdURLReverse bool, cmdSIPFilterMode int, cmdDIPFilterMode int, cmdDomainFilterMode int, cmdSportFilterMode int, cmdDportFilterMode int, cmdURLFilterMode int, cmdPprofSwitch bool) (*FilterConfig, error) {
+func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSortBy string, cmdCsvTop int, cmdWorkers int, cmdBatchSize int, cmdOutput string, cmdLogPath string, cmdStartTime string, cmdEndTime string, cmdSIPFilters []string, cmdDIPFilters []string, cmdDomainFilters []string, cmdSportFilters []string, cmdDportFilters []string, cmdURLFilters []string, cmdSIPReverse bool, cmdDIPReverse bool, cmdDomainReverse bool, cmdSportReverse bool, cmdDportReverse bool, cmdURLReverse bool, cmdSIPFilterMode int, cmdDIPFilterMode int, cmdDomainFilterMode int, cmdSportFilterMode int, cmdDportFilterMode int, cmdURLFilterMode int, cmdPprofSwitch bool, cmdFlushThreshold int) (*FilterConfig, error) {
 	// 如果没有配置文件，直接返回命令行参数（如果命令行参数为空，则使用内置默认值）
 	if configFile == nil {
 		return &FilterConfig{
@@ -156,6 +160,7 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 			DportFilterMode:  cmdDportFilterMode,
 			URLFilterMode:    cmdURLFilterMode,
 			PprofSwitch:      cmdPprofSwitch,
+			FlushThreshold:   getIntOrDefault(cmdFlushThreshold, 500000),
 		}, nil
 	}
 
@@ -190,6 +195,7 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 		DportFilterMode:  configFile.DportFilterMode,
 		URLFilterMode:    configFile.URLFilterMode,
 		PprofSwitch:      configFile.PprofSwitch,
+		FlushThreshold:   configFile.FlushThreshold,
 	}
 
 	// 命令行参数覆盖配置文件（命令行显式指定的优先）
@@ -287,6 +293,11 @@ func MergeConfig(configFile *FilterConfig, cmdFields string, cmdTopN int, cmdSor
 	}
 	if cmdURLFilterMode != 0 {
 		merged.URLFilterMode = cmdURLFilterMode
+	}
+
+	// 合并BadgerDB参数（命令行参数覆盖配置文件参数）
+	if cmdFlushThreshold != 0 {
+		merged.FlushThreshold = cmdFlushThreshold
 	}
 
 	return merged, nil

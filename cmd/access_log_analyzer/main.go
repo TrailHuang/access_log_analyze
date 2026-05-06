@@ -5,6 +5,7 @@ import (
 	"access_log_analyze/internal/config"
 	"access_log_analyze/internal/merger"
 	"access_log_analyze/pkg/models"
+	"access_log_analyze/pkg/storage"
 	"flag"
 	"fmt"
 	"os"
@@ -29,6 +30,8 @@ func main() {
 	mergeDir := flag.String("merge", "", "合并目录: 将目录下所有up/down/total CSV文件按fields合并")
 	duration := flag.Float64("duration", 0, "持续时间(秒)，用于计算Mbps")
 	redistributeEmpty := flag.Bool("redistribute_empty", false, "merge模式下将空值记录的流量按比例分摊到其他记录")
+	useBadger := flag.Bool("use_badger", false, "使用BadgerDB作为存储引擎，降低内存占用")
+	flushThreshold := flag.Int("flush_threshold", 0, "BadgerDB本地map flush阈值(key数量)，默认500000")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
@@ -105,7 +108,7 @@ func main() {
 	}
 
 	// 合并配置（命令行优先级高于配置文件）
-	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, cmdURLFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *urlReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *urlFilterMode, *pprofSwitch)
+	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, cmdURLFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *urlReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *urlFilterMode, *pprofSwitch, *flushThreshold)
 	if err != nil {
 		fmt.Printf("错误: 合并配置失败: %v\n", err)
 		os.Exit(1)
@@ -357,11 +360,48 @@ func main() {
 
 	fmt.Printf("找到 %d 个tar.gz文件\n", len(tarGzFiles))
 
-	// 并发处理文件
-	statsMap := analyzer.ProcessFilesConcurrent(tarGzFiles, fieldIndexes, filters, *workers, *batchSize, *output)
+	var db *storage.BadgerStorage
+	var statsMap map[string]*models.TrafficStats
 
-	// 输出统计结果
-	analyzer.PrintResults(statsMap, fieldIndexes, *topN, *sortBy, *csvTop, *output)
+	if *useBadger {
+		flushThresh := mergedConfig.FlushThreshold
+		if flushThresh <= 0 {
+			flushThresh = 500000
+		}
+		var err error
+		db, err = analyzer.ProcessFilesWithBadger(tarGzFiles, fieldIndexes, filters, *workers, flushThresh)
+		if err != nil {
+			fmt.Printf("错误: BadgerDB处理失败: %v\n", err)
+			os.Exit(1)
+		}
+		defer db.Cleanup()
+
+		records, err := db.GetAllRecords()
+		if err != nil {
+			fmt.Printf("错误: 读取BadgerDB记录失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		statsMap = make(map[string]*models.TrafficStats, len(records))
+		for _, rec := range records {
+			statsMap[rec.Key] = &models.TrafficStats{
+				Key:       rec.Key,
+				Fields:    rec.Fields,
+				UpTotal:   rec.UpTotal,
+				DownTotal: rec.DownTotal,
+				FlowTotal: rec.FlowTotal,
+			}
+		}
+	} else {
+		statsMap = analyzer.ProcessFilesConcurrent(tarGzFiles, fieldIndexes, filters, *workers, *batchSize, *output)
+	}
+
+	sortByActual := *sortBy
+	if sortByActual == "" {
+		sortByActual = "up"
+	}
+
+	analyzer.PrintResultsFromMap(statsMap, fieldIndexes, *topN, sortByActual, *csvTop, *output)
 }
 
 // 注意: tablewriter的导入是为了保持兼容性，实际未使用

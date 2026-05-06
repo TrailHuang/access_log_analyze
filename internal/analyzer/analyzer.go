@@ -334,7 +334,7 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 			}
 		}
 
-		key := keyBuilder.String()
+		key := strings.Clone(keyBuilder.String())
 		KeyBuilderPool.Put(keyBuilder)
 
 		// ---- 提取流量数据 ----
