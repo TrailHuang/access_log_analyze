@@ -36,9 +36,11 @@ func main() {
 	flushThreshold := flag.Int("flush_threshold", 0, "BadgerDB本地map flush阈值(key数量)，默认500000")
 
 	// 话单导出参数
-	exportFile := flag.String("export", "", "导出话单CSV文件名(启用导出模式)")
+	exportMode := flag.Bool("export", false, "启用话单导出模式(自动生成文件名)")
+	exportFile := flag.String("export_file", "", "导出话单CSV文件名(覆盖自动生成的文件名)")
 	exportStart := flag.String("export_start", "", "导出时间范围开始(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
 	exportEnd := flag.String("export_end", "", "导出时间范围结束(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
+	exportFilterLogic := flag.Int("export_filter_logic", 0, "导出过滤逻辑：0=与(默认，所有条件都需满足), 1=或(满足任一条件即可)")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
@@ -122,7 +124,7 @@ func main() {
 	}
 
 	// 合并配置（命令行优先级高于配置文件）
-	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, cmdURLFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *urlReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *urlFilterMode, *pprofSwitch, *flushThreshold)
+	mergedConfig, err := config.MergeConfig(filterConfig, *fields, *topN, *sortBy, *csvTop, *workers, *batchSize, *output, dirPath, *startTime, *endTime, cmdSIPFilters, cmdDIPFilters, cmdDomainFilters, cmdSportFilters, cmdDportFilters, cmdURLFilters, *sipReverse, *dipReverse, *domainReverse, *sportReverse, *dportReverse, *urlReverse, *sipFilterMode, *dipFilterMode, *domainFilterMode, *sportFilterMode, *dportFilterMode, *urlFilterMode, *pprofSwitch, *flushThreshold, *exportFilterLogic)
 	if err != nil {
 		fmt.Printf("错误: 合并配置失败: %v\n", err)
 		os.Exit(1)
@@ -168,24 +170,25 @@ func main() {
 
 	// 创建过滤器
 	filters := &models.LogFilters{
-		SIPFilters:       mergedConfig.SIPFilters,
-		DIPFilters:       mergedConfig.DIPFilters,
-		DomainFilters:    mergedConfig.DomainFilters,
-		SportFilters:     mergedConfig.SportFilters,
-		DportFilters:     mergedConfig.DportFilters,
-		URLFilters:       mergedConfig.URLFilters,
-		SIPReverse:       mergedConfig.SIPReverse,
-		DIPReverse:       mergedConfig.DIPReverse,
-		DomainReverse:    mergedConfig.DomainReverse,
-		SportReverse:     mergedConfig.SportReverse,
-		DportReverse:     mergedConfig.DportReverse,
-		URLReverse:       mergedConfig.URLReverse,
-		SIPFilterMode:    mergedConfig.SIPFilterMode,
-		DIPFilterMode:    mergedConfig.DIPFilterMode,
-		DomainFilterMode: mergedConfig.DomainFilterMode,
-		SportFilterMode:  mergedConfig.SportFilterMode,
-		DportFilterMode:  mergedConfig.DportFilterMode,
-		URLFilterMode:    mergedConfig.URLFilterMode,
+		SIPFilters:        mergedConfig.SIPFilters,
+		DIPFilters:        mergedConfig.DIPFilters,
+		DomainFilters:     mergedConfig.DomainFilters,
+		SportFilters:      mergedConfig.SportFilters,
+		DportFilters:      mergedConfig.DportFilters,
+		URLFilters:        mergedConfig.URLFilters,
+		SIPReverse:        mergedConfig.SIPReverse,
+		DIPReverse:        mergedConfig.DIPReverse,
+		DomainReverse:     mergedConfig.DomainReverse,
+		SportReverse:      mergedConfig.SportReverse,
+		DportReverse:      mergedConfig.DportReverse,
+		URLReverse:        mergedConfig.URLReverse,
+		SIPFilterMode:     mergedConfig.SIPFilterMode,
+		DIPFilterMode:     mergedConfig.DIPFilterMode,
+		DomainFilterMode:  mergedConfig.DomainFilterMode,
+		SportFilterMode:   mergedConfig.SportFilterMode,
+		DportFilterMode:   mergedConfig.DportFilterMode,
+		URLFilterMode:     mergedConfig.URLFilterMode,
+		ExportFilterLogic: *exportFilterLogic,
 	}
 
 	// 预编译URL正则表达式
@@ -208,7 +211,7 @@ func main() {
 	}
 
 	// 如果是导出模式，处理并退出
-	if *exportFile != "" {
+	if *exportMode {
 		if err := handleExportMode(dirPath, *exportFile, *exportStart, *exportEnd, *workers, filters); err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
@@ -431,6 +434,11 @@ func main() {
 func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, workers int, filters *models.LogFilters) error {
 	fmt.Printf("=== 话单导出模式 ===\n")
 	fmt.Printf("日志路径: %s\n", dirPath)
+
+	// 如果没有指定导出文件名，自动生成
+	if exportFile == "" {
+		exportFile = generateExportFileName(filters, exportStart, exportEnd)
+	}
 	fmt.Printf("导出文件: %s\n", exportFile)
 	if exportStart != "" {
 		fmt.Printf("导出开始时间: %s\n", exportStart)
@@ -537,3 +545,48 @@ func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, worker
 
 // 注意: tablewriter的导入是为了保持兼容性，实际未使用
 var _ = tablewriter.NewWriter
+
+// generateExportFileName 根据过滤条件和时间范围自动生成导出文件名
+func generateExportFileName(filters *models.LogFilters, exportStart, exportEnd string) string {
+	var parts []string
+
+	// 添加过滤条件
+	if len(filters.SIPFilters) > 0 {
+		parts = append(parts, fmt.Sprintf("sip_%s", strings.Join(filters.SIPFilters, "_")))
+	}
+	if len(filters.DIPFilters) > 0 {
+		parts = append(parts, fmt.Sprintf("dip_%s", strings.Join(filters.DIPFilters, "_")))
+	}
+	if len(filters.DomainFilters) > 0 {
+		parts = append(parts, fmt.Sprintf("domain_%s", strings.Join(filters.DomainFilters, "_")))
+	}
+	if len(filters.SportFilters) > 0 {
+		parts = append(parts, fmt.Sprintf("sport_%s", strings.Join(filters.SportFilters, "_")))
+	}
+	if len(filters.DportFilters) > 0 {
+		parts = append(parts, fmt.Sprintf("dport_%s", strings.Join(filters.DportFilters, "_")))
+	}
+	if len(filters.URLFilters) > 0 {
+		parts = append(parts, "url")
+	}
+
+	// 添加时间范围
+	if exportStart != "" || exportEnd != "" {
+		timePart := ""
+		if exportStart != "" {
+			timePart = exportStart
+		}
+		timePart += "_"
+		if exportEnd != "" {
+			timePart += exportEnd
+		}
+		parts = append(parts, timePart)
+	}
+
+	// 如果没有过滤条件，使用默认名称
+	if len(parts) == 0 {
+		return "export_records.csv"
+	}
+
+	return fmt.Sprintf("export_%s.csv", strings.Join(parts, "_"))
+}

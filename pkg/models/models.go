@@ -45,6 +45,8 @@ type LogFilters struct {
 	URLFilterMode    int
 
 	URLCompiledRegex []*regexp.Regexp
+
+	ExportFilterLogic int
 }
 
 // HasFilters 检查是否有过滤条件

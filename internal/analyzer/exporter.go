@@ -36,35 +36,6 @@ func ExportTarGzFiles(files []string, config *ExportConfig) (int64, error) {
 		return 0, fmt.Errorf("没有文件需要处理")
 	}
 
-	outputPath := config.OutputFile
-	if outputPath == "" {
-		outputPath = "export_records.csv"
-	}
-
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return 0, fmt.Errorf("创建输出文件失败: %w", err)
-	}
-	defer file.Close()
-
-	file.WriteString("\xEF\xBB\xBF")
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	header := []string{
-		"HouseId", "源IP", "目的IP", "协议类型", "源端口", "目的端口",
-		"域名", "URL", "Duration", "UTC时间", "Title", "流量类型",
-		"传输层协议", "应用层协议", "业务层协议", "Referer", "Location",
-		"网站内容", "访问数据量", "上行流量", "下行流量", "应用名称",
-	}
-	if err := writer.Write(header); err != nil {
-		return 0, fmt.Errorf("写入CSV表头失败: %w", err)
-	}
-
-	var mu sync.Mutex
-	var totalExported int64
-
 	taskCh := make(chan string, len(files))
 	for _, f := range files {
 		taskCh <- f
@@ -77,46 +48,19 @@ func ExportTarGzFiles(files []string, config *ExportConfig) (int64, error) {
 	}
 	resultCh := make(chan fileResult, len(files))
 
+	var fileSeqCounter int64
+
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 
-			localRecords := make([][]string, 0, 10000)
-
-			for filePath := range taskCh {
-				records, err := processTarGzForExport(filePath, config)
-				if err != nil {
-					fmt.Printf("  [Worker %d] 警告: 处理文件 %s 时出错: %v\n", workerID, filepath.Base(filePath), err)
-					resultCh <- fileResult{count: 0, err: err}
-					continue
-				}
-
-				localRecords = append(localRecords, records...)
-
-				if len(localRecords) >= 50000 {
-					mu.Lock()
-					for _, rec := range localRecords {
-						writer.Write(rec)
-					}
-					totalExported += int64(len(localRecords))
-					mu.Unlock()
-					localRecords = localRecords[:0]
-				}
-
-				fmt.Printf("  [Worker %d] ✓ %s 处理完成，匹配 %d 条记录\n", workerID, filepath.Base(filePath), len(records))
-				resultCh <- fileResult{count: int64(len(records)), err: nil}
+			count, err := processFilesForExport(taskCh, workerID, config, &fileSeqCounter)
+			if err != nil {
+				fmt.Printf("  [Worker %d] 错误: %v\n", workerID, err)
 			}
-
-			if len(localRecords) > 0 {
-				mu.Lock()
-				for _, rec := range localRecords {
-					writer.Write(rec)
-				}
-				totalExported += int64(len(localRecords))
-				mu.Unlock()
-			}
+			resultCh <- fileResult{count: count, err: err}
 		}(i)
 	}
 
@@ -125,11 +69,358 @@ func ExportTarGzFiles(files []string, config *ExportConfig) (int64, error) {
 		close(resultCh)
 	}()
 
+	var totalExported int64
 	for res := range resultCh {
-		_ = res
+		totalExported += res.count
 	}
 
 	return totalExported, nil
+}
+
+// processFilesForExport 处理多个文件并直接写入CSV
+func processFilesForExport(taskCh <-chan string, workerID int, config *ExportConfig, fileSeqCounter *int64) (int64, error) {
+	var totalExported int64
+	localRecords := make([][]string, 0, 100000)
+
+	seq := int(atomicAddInt64(fileSeqCounter, 1) - 1)
+	outputPath := generateOutputFileName(config.OutputFile, seq)
+	file, writer, err := createCSVFile(outputPath)
+	if err != nil {
+		return 0, fmt.Errorf("创建输出文件失败: %w", err)
+	}
+
+	writeRecord := func(rec []string) error {
+		localRecords = append(localRecords, rec)
+		if len(localRecords) >= 100000 {
+			for _, r := range localRecords {
+				writer.Write(r)
+			}
+			writer.Flush()
+			totalExported += int64(len(localRecords))
+			localRecords = localRecords[:0]
+
+			file.Close()
+			seq = int(atomicAddInt64(fileSeqCounter, 1) - 1)
+			outputPath = generateOutputFileName(config.OutputFile, seq)
+			file, writer, err = createCSVFile(outputPath)
+			if err != nil {
+				return fmt.Errorf("创建输出文件失败: %w", err)
+			}
+		}
+		return nil
+	}
+
+	for filePath := range taskCh {
+		count, err := processTarGzForExportWithCallback(filePath, config, writeRecord)
+		if err != nil {
+			fmt.Printf("  [Worker %d] 警告: 处理文件 %s 时出错: %v\n", workerID, filepath.Base(filePath), err)
+			continue
+		}
+
+		fmt.Printf("  [Worker %d] ✓ %s 处理完成，匹配 %d 条记录\n", workerID, filepath.Base(filePath), count)
+	}
+
+	if len(localRecords) > 0 {
+		for _, rec := range localRecords {
+			writer.Write(rec)
+		}
+		writer.Flush()
+		totalExported += int64(len(localRecords))
+	}
+	file.Close()
+
+	return totalExported, nil
+}
+
+// atomicAddInt64 原子加法
+func atomicAddInt64(val *int64, delta int64) int64 {
+	var mu sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+	*val += delta
+	return *val
+}
+
+// generateOutputFileName 生成输出文件名
+func generateOutputFileName(baseName string, seq int) string {
+	if baseName == "" {
+		baseName = "export_records.csv"
+	}
+
+	ext := filepath.Ext(baseName)
+	name := strings.TrimSuffix(baseName, ext)
+
+	if seq == 0 {
+		return fmt.Sprintf("%s%s", name, ext)
+	}
+	return fmt.Sprintf("%s_%d%s", name, seq, ext)
+}
+
+// createCSVFile 创建CSV文件并写入表头
+func createCSVFile(path string) (*os.File, *csv.Writer, error) {
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	file.WriteString("\xEF\xBB\xBF")
+
+	writer := csv.NewWriter(file)
+
+	header := []string{
+		"HouseId", "源IP", "目的IP", "协议类型", "源端口", "目的端口",
+		"域名", "URL", "Duration", "UTC时间", "Title", "流量类型",
+		"传输层协议", "应用层协议", "业务层协议", "Referer", "Location",
+		"网站内容", "访问数据量", "上行流量", "下行流量",
+	}
+	writer.Write(header)
+
+	return file, writer, nil
+}
+
+// processTarGzForExportWithCallback 处理单个tar.gz文件，通过回调函数逐条返回记录
+func processTarGzForExportWithCallback(filePath string, config *ExportConfig, callback func([]string) error) (int, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return 0, fmt.Errorf("创建gzip reader失败: %w", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	var count int
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return count, fmt.Errorf("读取tar文件失败: %w", err)
+		}
+
+		if header.Typeflag == tar.TypeReg && strings.HasSuffix(strings.ToLower(header.Name), ".txt") {
+			n, err := processLogForExportWithCallback(tarReader, config, callback)
+			if err != nil {
+				return count, fmt.Errorf("处理日志文件 %s 失败: %w", header.Name, err)
+			}
+			count += n
+		}
+	}
+
+	return count, nil
+}
+
+// processLogForExportWithCallback 解析日志文件并通过回调函数逐条返回匹配的记录
+func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, callback func([]string) error) (int, error) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	positions := make([]fieldPos, 0, 32)
+
+	needFilter := config.Filters.HasFilters()
+	needTimeFilter := config.ExportStart != "" || config.ExportEnd != ""
+
+	type filterField struct {
+		name string
+		idx  int
+	}
+	filterFields := []filterField{
+		{"sip", 1},
+		{"dip", 2},
+		{"domain", 6},
+		{"sport", 4},
+		{"dport", 5},
+		{"url", 7},
+	}
+
+	var count int
+
+	for scanner.Scan() {
+		lineBytes := scanner.Bytes()
+
+		if len(lineBytes) == 0 {
+			continue
+		}
+		allSpace := true
+		for _, b := range lineBytes {
+			if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+				allSpace = false
+				break
+			}
+		}
+		if allSpace {
+			continue
+		}
+
+		positions = findFieldPositions(lineBytes, positions[:0])
+
+		if len(positions) < 21 {
+			continue
+		}
+
+		if needFilter {
+			if config.Filters.ExportFilterLogic == 1 {
+				matched := false
+				for _, ff := range filterFields {
+					value := getFieldString(lineBytes, positions, ff.idx)
+
+					switch ff.name {
+					case "sip":
+						if len(config.Filters.SIPFilters) > 0 && MatchFilter(value, config.Filters.SIPFilters, config.Filters.SIPReverse) {
+							matched = true
+						}
+					case "dip":
+						if len(config.Filters.DIPFilters) > 0 && MatchFilter(value, config.Filters.DIPFilters, config.Filters.DIPReverse) {
+							matched = true
+						}
+					case "domain":
+						if len(config.Filters.DomainFilters) > 0 && MatchFilter(value, config.Filters.DomainFilters, config.Filters.DomainReverse) {
+							matched = true
+						}
+					case "sport":
+						if len(config.Filters.SportFilters) > 0 && MatchFilter(value, config.Filters.SportFilters, config.Filters.SportReverse) {
+							matched = true
+						}
+					case "dport":
+						if len(config.Filters.DportFilters) > 0 && MatchFilter(value, config.Filters.DportFilters, config.Filters.DportReverse) {
+							matched = true
+						}
+					case "url":
+						if len(config.Filters.URLFilters) > 0 && MatchURLFilter(value, config.Filters) {
+							matched = true
+						}
+					}
+
+					if matched {
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			} else {
+				skip := false
+				for _, ff := range filterFields {
+					value := getFieldString(lineBytes, positions, ff.idx)
+
+					switch ff.name {
+					case "sip":
+						if !MatchFilter(value, config.Filters.SIPFilters, config.Filters.SIPReverse) {
+							skip = true
+						}
+					case "dip":
+						if !MatchFilter(value, config.Filters.DIPFilters, config.Filters.DIPReverse) {
+							skip = true
+						}
+					case "domain":
+						if !MatchFilter(value, config.Filters.DomainFilters, config.Filters.DomainReverse) {
+							skip = true
+						}
+					case "sport":
+						if !MatchFilter(value, config.Filters.SportFilters, config.Filters.SportReverse) {
+							skip = true
+						}
+					case "dport":
+						if !MatchFilter(value, config.Filters.DportFilters, config.Filters.DportReverse) {
+							skip = true
+						}
+					case "url":
+						if !MatchURLFilter(value, config.Filters) {
+							skip = true
+						}
+					}
+
+					if skip {
+						break
+					}
+				}
+				if skip {
+					continue
+				}
+			}
+		}
+
+		if config.Filters.SIPFilterMode != 0 || config.Filters.DIPFilterMode != 0 || config.Filters.DomainFilterMode != 0 || config.Filters.SportFilterMode != 0 || config.Filters.DportFilterMode != 0 || config.Filters.URLFilterMode != 0 {
+			skip := false
+
+			if config.Filters.SIPFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 1)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.SIPFilterMode == 1 && !isEmpty) || (config.Filters.SIPFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && config.Filters.DIPFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 2)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.DIPFilterMode == 1 && !isEmpty) || (config.Filters.DIPFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && config.Filters.DomainFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 6)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.DomainFilterMode == 1 && !isEmpty) || (config.Filters.DomainFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && config.Filters.SportFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 4)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.SportFilterMode == 1 && !isEmpty) || (config.Filters.SportFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && config.Filters.DportFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 5)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.DportFilterMode == 1 && !isEmpty) || (config.Filters.DportFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if !skip && config.Filters.URLFilterMode != 0 {
+				value := getFieldString(lineBytes, positions, 7)
+				isEmpty := value == "" || value == "-"
+				if (config.Filters.URLFilterMode == 1 && !isEmpty) || (config.Filters.URLFilterMode == 2 && isEmpty) {
+					skip = true
+				}
+			}
+
+			if skip {
+				continue
+			}
+		}
+
+		if needTimeFilter {
+			utcTime := getFieldString(lineBytes, positions, 9)
+			if !matchTimeRange(utcTime, config.ExportStart, config.ExportEnd) {
+				continue
+			}
+		}
+
+		record := make([]string, 21)
+		for i := 0; i < 21 && i < len(positions); i++ {
+			record[i] = getFieldString(lineBytes, positions, i)
+		}
+
+		if err := callback(record); err != nil {
+			return count, err
+		}
+		count++
+	}
+
+	return count, scanner.Err()
 }
 
 // processTarGzForExport 处理单个tar.gz文件并返回匹配的记录
@@ -213,48 +504,91 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 
 		positions = findFieldPositions(lineBytes, positions[:0])
 
-		if len(positions) < 22 {
+		if len(positions) < 21 {
 			continue
 		}
 
 		if needFilter {
-			skip := false
-			for _, ff := range filterFields {
-				value := getFieldString(lineBytes, positions, ff.idx)
+			if config.Filters.ExportFilterLogic == 1 {
+				// 或模式：满足任一过滤条件即可
+				matched := false
+				for _, ff := range filterFields {
+					value := getFieldString(lineBytes, positions, ff.idx)
 
-				switch ff.name {
-				case "sip":
-					if !MatchFilter(value, config.Filters.SIPFilters, config.Filters.SIPReverse) {
-						skip = true
+					switch ff.name {
+					case "sip":
+						if len(config.Filters.SIPFilters) > 0 && MatchFilter(value, config.Filters.SIPFilters, config.Filters.SIPReverse) {
+							matched = true
+						}
+					case "dip":
+						if len(config.Filters.DIPFilters) > 0 && MatchFilter(value, config.Filters.DIPFilters, config.Filters.DIPReverse) {
+							matched = true
+						}
+					case "domain":
+						if len(config.Filters.DomainFilters) > 0 && MatchFilter(value, config.Filters.DomainFilters, config.Filters.DomainReverse) {
+							matched = true
+						}
+					case "sport":
+						if len(config.Filters.SportFilters) > 0 && MatchFilter(value, config.Filters.SportFilters, config.Filters.SportReverse) {
+							matched = true
+						}
+					case "dport":
+						if len(config.Filters.DportFilters) > 0 && MatchFilter(value, config.Filters.DportFilters, config.Filters.DportReverse) {
+							matched = true
+						}
+					case "url":
+						if len(config.Filters.URLFilters) > 0 && MatchURLFilter(value, config.Filters) {
+							matched = true
+						}
 					}
-				case "dip":
-					if !MatchFilter(value, config.Filters.DIPFilters, config.Filters.DIPReverse) {
-						skip = true
-					}
-				case "domain":
-					if !MatchFilter(value, config.Filters.DomainFilters, config.Filters.DomainReverse) {
-						skip = true
-					}
-				case "sport":
-					if !MatchFilter(value, config.Filters.SportFilters, config.Filters.SportReverse) {
-						skip = true
-					}
-				case "dport":
-					if !MatchFilter(value, config.Filters.DportFilters, config.Filters.DportReverse) {
-						skip = true
-					}
-				case "url":
-					if !MatchURLFilter(value, config.Filters) {
-						skip = true
+
+					if matched {
+						break
 					}
 				}
+				if !matched {
+					continue
+				}
+			} else {
+				// 与模式（默认）：所有过滤条件都需满足
+				skip := false
+				for _, ff := range filterFields {
+					value := getFieldString(lineBytes, positions, ff.idx)
 
+					switch ff.name {
+					case "sip":
+						if !MatchFilter(value, config.Filters.SIPFilters, config.Filters.SIPReverse) {
+							skip = true
+						}
+					case "dip":
+						if !MatchFilter(value, config.Filters.DIPFilters, config.Filters.DIPReverse) {
+							skip = true
+						}
+					case "domain":
+						if !MatchFilter(value, config.Filters.DomainFilters, config.Filters.DomainReverse) {
+							skip = true
+						}
+					case "sport":
+						if !MatchFilter(value, config.Filters.SportFilters, config.Filters.SportReverse) {
+							skip = true
+						}
+					case "dport":
+						if !MatchFilter(value, config.Filters.DportFilters, config.Filters.DportReverse) {
+							skip = true
+						}
+					case "url":
+						if !MatchURLFilter(value, config.Filters) {
+							skip = true
+						}
+					}
+
+					if skip {
+						break
+					}
+				}
 				if skip {
-					break
+					continue
 				}
-			}
-			if skip {
-				continue
 			}
 		}
 
@@ -321,8 +655,8 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 			}
 		}
 
-		record := make([]string, 22)
-		for i := 0; i < 22 && i < len(positions); i++ {
+		record := make([]string, 21)
+		for i := 0; i < 21 && i < len(positions); i++ {
 			record[i] = getFieldString(lineBytes, positions, i)
 		}
 
