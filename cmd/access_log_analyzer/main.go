@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime/pprof"
 	"strings"
+	"time"
 
 	"github.com/olekukonko/tablewriter"
 )
@@ -33,6 +34,11 @@ func main() {
 	redistributeEmpty := flag.Bool("redistribute_empty", false, "merge模式下将空值记录的流量按比例分摊到其他记录")
 	useBadger := flag.Bool("use_badger", false, "使用BadgerDB作为存储引擎，降低内存占用")
 	flushThreshold := flag.Int("flush_threshold", 0, "BadgerDB本地map flush阈值(key数量)，默认500000")
+
+	// 话单导出参数
+	exportFile := flag.String("export", "", "导出话单CSV文件名(启用导出模式)")
+	exportStart := flag.String("export_start", "", "导出时间范围开始(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
+	exportEnd := flag.String("export_end", "", "导出时间范围结束(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
@@ -199,6 +205,15 @@ func main() {
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		fmt.Printf("错误: 路径不存在: %s\n", dirPath)
 		os.Exit(1)
+	}
+
+	// 如果是导出模式，处理并退出
+	if *exportFile != "" {
+		if err := handleExportMode(dirPath, *exportFile, *exportStart, *exportEnd, *workers, filters); err != nil {
+			fmt.Printf("错误: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// 解析字段名到索引的映射
@@ -410,6 +425,114 @@ func main() {
 	}
 
 	analyzer.PrintResultsFromMap(statsMap, fieldIndexes, *topN, sortByActual, *csvTop, *output)
+}
+
+// handleExportMode 处理话单导出模式
+func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, workers int, filters *models.LogFilters) error {
+	fmt.Printf("=== 话单导出模式 ===\n")
+	fmt.Printf("日志路径: %s\n", dirPath)
+	fmt.Printf("导出文件: %s\n", exportFile)
+	if exportStart != "" {
+		fmt.Printf("导出开始时间: %s\n", exportStart)
+	}
+	if exportEnd != "" {
+		fmt.Printf("导出结束时间: %s\n", exportEnd)
+	}
+	if filters.HasFilters() {
+		fmt.Printf("过滤条件:\n")
+		if len(filters.SIPFilters) > 0 {
+			reverseMark := ""
+			if filters.SIPReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  源IP: %v%s\n", filters.SIPFilters, reverseMark)
+		}
+		if len(filters.DIPFilters) > 0 {
+			reverseMark := ""
+			if filters.DIPReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  目的IP: %v%s\n", filters.DIPFilters, reverseMark)
+		}
+		if len(filters.DomainFilters) > 0 {
+			reverseMark := ""
+			if filters.DomainReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  域名: %v%s\n", filters.DomainFilters, reverseMark)
+		}
+		if len(filters.SportFilters) > 0 {
+			reverseMark := ""
+			if filters.SportReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  源端口: %v%s\n", filters.SportFilters, reverseMark)
+		}
+		if len(filters.DportFilters) > 0 {
+			reverseMark := ""
+			if filters.DportReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  目的端口: %v%s\n", filters.DportFilters, reverseMark)
+		}
+		if len(filters.URLFilters) > 0 {
+			reverseMark := ""
+			if filters.URLReverse {
+				reverseMark = " [反向]"
+			}
+			fmt.Printf("  URL: %v%s\n", filters.URLFilters, reverseMark)
+		}
+	}
+
+	startTime := time.Now()
+
+	var tarGzFiles []string
+	info, err := os.Stat(dirPath)
+	if err != nil {
+		return fmt.Errorf("访问路径失败: %w", err)
+	}
+
+	if info.IsDir() {
+		err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".tar.gz") {
+				tarGzFiles = append(tarGzFiles, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("遍历目录失败: %w", err)
+		}
+	} else {
+		tarGzFiles = append(tarGzFiles, dirPath)
+	}
+
+	if len(tarGzFiles) == 0 {
+		return fmt.Errorf("未找到tar.gz文件")
+	}
+
+	fmt.Printf("找到 %d 个tar.gz文件\n", len(tarGzFiles))
+
+	exportConfig := &analyzer.ExportConfig{
+		OutputFile:  exportFile,
+		ExportStart: exportStart,
+		ExportEnd:   exportEnd,
+		Filters:     filters,
+		Workers:     workers,
+	}
+
+	totalExported, err := analyzer.ExportTarGzFiles(tarGzFiles, exportConfig)
+	if err != nil {
+		return fmt.Errorf("导出话单失败: %w", err)
+	}
+
+	elapsed := time.Since(startTime)
+	fmt.Printf("\n导出完成: 共导出 %d 条记录 (%.2fs)\n", totalExported, elapsed.Seconds())
+	fmt.Printf("输出文件: %s\n", exportFile)
+
+	return nil
 }
 
 // 注意: tablewriter的导入是为了保持兼容性，实际未使用
