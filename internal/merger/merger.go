@@ -206,7 +206,7 @@ func mergeCSVFilesByType(files []string, fieldList []string, sortType string, to
 		}
 	})
 
-	outputFile := fmt.Sprintf("merged_%s.csv", sortType)
+	outputFile := fmt.Sprintf("merged_%s_%s.csv", strings.Join(fieldList, "_"), sortType)
 	if err := ExportMergedCSV(records, fieldList, outputFile, sortType, durationSeconds, output); err != nil {
 		return fmt.Errorf("导出CSV失败: %v", err)
 	}
@@ -307,7 +307,13 @@ func extractTopNPerKey(records []*models.CSVRecord, fieldList []string, sortType
 		}
 	})
 
-	outputFile := fmt.Sprintf("top%d_%s.csv", topN, sortType)
+	outputFile := ""
+	if redistributeEmpty {
+		outputFile = fmt.Sprintf("top%d_%s_%s_redistribute.csv", topN, strings.Join(fieldList, "_"), sortType)
+
+	} else {
+		outputFile = fmt.Sprintf("top%d_%s_%s.csv", topN, strings.Join(fieldList, "_"), sortType)
+	}
 	if err := ExportMergedCSV(topNRecords, fieldList, outputFile, sortType, durationSeconds, output); err != nil {
 		return fmt.Errorf("导出TopN CSV失败: %v", err)
 	}
@@ -334,8 +340,13 @@ func extractTopNSingleField(records []*models.CSVRecord, fieldList []string, sor
 	}
 
 	topNRecords := records[:limit]
+	outputFile := ""
+	if redistributeEmpty {
+		outputFile = fmt.Sprintf("top%d_%s_%s_redistribute.csv", topN, strings.Join(fieldList, "_"), sortType)
 
-	outputFile := fmt.Sprintf("top%d_%s.csv", topN, sortType)
+	} else {
+		outputFile = fmt.Sprintf("top%d_%s_%s.csv", topN, strings.Join(fieldList, "_"), sortType)
+	}
 	if err := ExportMergedCSV(topNRecords, fieldList, outputFile, sortType, durationSeconds, output); err != nil {
 		return fmt.Errorf("导出TopN CSV失败: %v", err)
 	}
