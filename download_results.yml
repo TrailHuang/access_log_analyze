@@ -1,0 +1,96 @@
+# download_results.yml
+- hosts: IS
+  become: yes
+  vars:
+    # 路径配置
+    analyzer_dir: "/home/sino/access_log_analyzer_release"
+
+    # 分析参数（用于生成文件名）
+    start_time: "20260506200000"
+
+    # 下载配置
+    local_download_dir: "/home/sino/{{ start_time[:8] }}"
+
+  pre_tasks:
+    - name: 显示下载配置
+      debug:
+        msg: |
+          下载分析结果配置：
+          主机: {{ inventory_hostname }}
+          远程目录: {{ analyzer_dir }}
+          本地目录: {{ local_download_dir }}
+          时间标识: {{ start_time[:10] }}
+      run_once: yes
+
+  tasks:
+    - name: 查找生成的CSV文件
+      shell: |
+        cd {{ analyzer_dir }}
+        # 查找所有匹配的CSV文件（result_*.csv）
+        ls -1 result_*.csv 2>/dev/null || echo "NO_FILES"
+      register: csv_files
+      changed_when: false
+
+    - name: 检查文件是否存在
+      fail:
+        msg: "未找到任何结果文件，请确认分析器已执行完成"
+      when: csv_files.stdout == "NO_FILES"
+
+    - name: 显示找到的文件
+      debug:
+        msg: "找到以下文件：\n{{ csv_files.stdout }}"
+
+    - name: 创建本地下载目录
+      file:
+        path: "{{ local_download_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+      run_once: yes
+
+    - name: 下载下行流量CSV文件
+      fetch:
+        src: "{{ analyzer_dir }}/result_{{ start_time[:8] }}{{ start_time[8:10] }}_down.csv"
+        dest: "{{ local_download_dir }}/{{ inventory_hostname }}_result_down.csv"
+        flat: yes
+      ignore_errors: yes
+
+    - name: 下载上行流量CSV文件
+      fetch:
+        src: "{{ analyzer_dir }}/result_{{ start_time[:8] }}{{ start_time[8:10] }}_up.csv"
+        dest: "{{ local_download_dir }}/{{ inventory_hostname }}_result_up.csv"
+        flat: yes
+      ignore_errors: yes
+
+    - name: 验证下载的文件
+      shell: |
+        if [ -f "{{ local_download_dir }}/{{ inventory_hostname }}_result_down.csv" ]; then
+          DOWN_SIZE=$(wc -l < "{{ local_download_dir }}/{{ inventory_hostname }}_result_down.csv")
+          echo "下行文件: {{ local_download_dir }}/{{ inventory_hostname }}_result_down.csv ($DOWN_SIZE 行)"
+        else
+          echo "下行文件: 未下载"
+        fi
+
+        if [ -f "{{ local_download_dir }}/{{ inventory_hostname }}_result_up.csv" ]; then
+          UP_SIZE=$(wc -l < "{{ local_download_dir }}/{{ inventory_hostname }}_result_up.csv")
+          echo "上行文件: {{ local_download_dir }}/{{ inventory_hostname }}_result_up.csv ($UP_SIZE 行)"
+        else
+          echo "上行文件: 未下载"
+        fi
+      delegate_to: localhost
+      become: no
+      register: download_result
+      changed_when: false
+
+  post_tasks:
+    - name: 显示下载结果
+      debug:
+        msg: |
+          下载结果 - {{ inventory_hostname }}:
+          =========================================
+          {{ download_result.stdout }}
+
+          本地文件位置:
+          - 下行流量: {{ local_download_dir }}/{{ inventory_hostname }}_result_down.csv
+          - 上行流量: {{ local_download_dir }}/{{ inventory_hostname }}_result_up.csv

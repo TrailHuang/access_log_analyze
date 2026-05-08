@@ -1,0 +1,406 @@
+# log_export_with_download.yml
+- hosts: IS
+  become: yes
+  vars:
+    # 路径配置
+    analyzer_dir: "/home/sino/access_log_analyzer_release"
+    analyzer_binary: "access_log_analyzer_linux_amd64_new"
+
+    # 日志配置
+    log_dir: "/home/sino/fangwenrzhi"
+    output_log_file: "analyzer_2026050700.log"
+
+    # 时间参数
+    start_time: "20260506195500"
+    end_time: "20260506200500"
+    export_start_time: "20260506200000"
+    export_end_time: "20260506200200"
+
+    # IP地址参数
+    destination_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
+    source_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
+
+    # 其他参数
+    filter_logic: 1
+
+    # 监控配置
+    pid_file: "/tmp/analyzer_{{ ansible_date_time.date }}.pid"
+    max_wait_time: 30
+    sleep_interval: 5
+
+    # 下载配置
+    local_base: "/home/sino/access_log_analyzer_release/{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+    csv_pattern: "export_sip_*.csv"
+
+    # 等待配置（可调整）
+    wait_retries: 120  # 最大重试次数
+    wait_delay: 5      # 每次间隔秒数
+
+  pre_tasks:
+    - name: 检查环境
+      debug:
+        msg: |
+          启动分析器配置：
+          主机: {{ inventory_hostname }}
+          分析器: {{ analyzer_dir }}/{{ analyzer_binary }}
+          时间范围: {{ start_time }} 到 {{ end_time }}
+          导出时间: {{ export_start_time }} 到 {{ export_end_time }}
+          源IP: {{ source_ip }}
+          目标IP: {{ destination_ip }}
+          本地下载目录: {{ local_base }}
+          最大等待时间: {{ wait_retries * wait_delay }}秒
+      run_once: yes
+
+  tasks:
+    # ==================== 启动分析器 ====================
+    - name: 检查分析器二进制文件
+      stat:
+        path: "{{ analyzer_dir }}/{{ analyzer_binary }}"
+      register: binary_check
+      failed_when: not binary_check.stat.exists
+      ignore_errors: no
+
+    - name: 生成启动脚本
+      copy:
+        content: |
+          #!/bin/bash
+          cd {{ analyzer_dir }}
+
+          # 检查是否已在运行
+          if pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" > /dev/null; then
+            echo "分析器已经在运行，跳过启动"
+            exit 0
+          fi
+
+          # 清理旧日志
+          if [ -f "{{ analyzer_dir }}/{{ output_log_file }}" ]; then
+            echo "备份旧日志: {{ analyzer_dir }}/{{ output_log_file }}"
+            mv "{{ analyzer_dir }}/{{ output_log_file }}" "{{ analyzer_dir }}/{{ output_log_file }}.bak_$(date +%Y%m%d%H%M%S)"
+          fi
+
+          # 清理旧版CSV文件
+          echo "清理旧版CSV文件..."
+          rm -f {{ analyzer_dir }}/{{ csv_pattern }}
+          echo "旧版CSV文件清理完成"
+
+          # 启动分析器
+          nohup ./{{ analyzer_binary }} \
+            -log_path {{ log_dir }} \
+            -export \
+            -start {{ start_time }} \
+            -end {{ end_time }} \
+            -export_start {{ export_start_time }} \
+            -export_end {{ export_end_time }} \
+            -dip "{{ destination_ip }}" \
+            -sip "{{ source_ip }}" \
+            -export_filter_logic {{ filter_logic }} \
+            > ./{{ output_log_file }} 2>&1 &
+
+          # 获取进程ID
+          ANALYZER_PID=$!
+          echo "分析器启动成功，PID: $ANALYZER_PID"
+          echo $ANALYZER_PID > {{ pid_file }}
+
+        dest: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+        mode: '0755'
+      when: binary_check.stat.exists
+
+    - name: 执行启动脚本
+      shell: |
+        /tmp/start_analyzer_{{ ansible_date_time.date }}.sh
+      register: analyzer_start_result
+      args:
+        executable: /bin/bash
+      when: binary_check.stat.exists
+      async: "{{ max_wait_time }}"
+      poll: 0
+      ignore_errors: yes
+
+    - name: 检查输出日志
+      shell: |
+        tail -n 10 {{ analyzer_dir }}/{{ output_log_file }} 2>/dev/null || echo "日志文件不存在"
+      register: analyzer_log
+      when: binary_check.stat.exists
+      changed_when: false
+
+    # ==================== 等待执行完成 ====================
+    - name: 等待分析器执行完成（异步轮询）
+      shell: |
+        echo "=== 检查时间: $(date '+%Y-%m-%d %H:%M:%S') ==="
+
+        if [ -f "{{ pid_file }}" ]; then
+          PID=$(head -1 {{ pid_file }})
+          echo "PID文件存在: $PID"
+
+          if kill -0 $PID 2>/dev/null; then
+            echo "状态: RUNNING (进程 $PID 仍在运行)"
+            exit 1
+          else
+            echo "状态: COMPLETED (进程 $PID 已结束)"
+            exit 0
+          fi
+        else
+          echo "PID文件不存在: {{ pid_file }}"
+
+          if pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" > /dev/null 2>&1; then
+            FOUND_PID=$(pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" | head -1)
+            echo "状态: RUNNING (通过进程名找到 PID: $FOUND_PID)"
+            exit 1
+          else
+            echo "状态: COMPLETED (未找到相关进程)"
+            exit 0
+          fi
+        fi
+      register: check_result
+      when: binary_check.stat.exists
+      changed_when: false
+      ignore_errors: yes
+      until: check_result.rc == 0
+      retries: "{{ wait_retries }}"
+      delay: "{{ wait_delay }}"
+
+    - name: 显示每个主机的等待结果
+      debug:
+        msg: |
+          主机: {{ inventory_hostname }}
+          执行状态: {{ check_result.stdout | default('N/A') }}
+          重试次数: {{ check_result.attempts | default(0) }}
+          最终返回码: {{ check_result.rc | default('N/A') }}
+      when: binary_check.stat.exists
+
+    # ==================== 验证导出文件 ====================
+    - name: 验证导出文件
+      shell: |
+        cd {{ analyzer_dir }}
+        ls -1 {{ csv_pattern }} 2>/dev/null || echo "NO_FILES"
+      register: export_files
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 检查导出文件
+      fail:
+        msg: "未找到导出文件，请检查日志: {{ analyzer_dir }}/{{ output_log_file }}"
+      when:
+        - binary_check.stat.exists
+        - export_files.stdout == "NO_FILES"
+
+    - name: 显示找到的导出文件
+      debug:
+        msg: "找到以下导出文件：\n{{ export_files.stdout }}"
+      when: binary_check.stat.exists
+
+    # ==================== 下载文件 ====================
+    - name: 删除已存在的本地目录
+      file:
+        path: "{{ local_base }}/{{ inventory_hostname }}"
+        state: absent
+      delegate_to: localhost
+      become: no
+      when: binary_check.stat.exists
+
+    - name: 创建本地目录
+      file:
+        path: "{{ local_base }}/{{ inventory_hostname }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+      when: binary_check.stat.exists
+
+    - name: 打包导出文件
+      shell: |
+        cd {{ analyzer_dir }}
+        tar -czf /tmp/csv_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.tar.gz {{ csv_pattern }}
+      when: binary_check.stat.exists
+      register: archive_result
+      args:
+        executable: /bin/bash
+
+    - name: 下载压缩包
+      fetch:
+        src: "/tmp/csv_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.tar.gz"
+        dest: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        flat: yes
+      when: binary_check.stat.exists
+      register: download_result
+
+    - name: 本地解压
+      unarchive:
+        src: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        dest: "{{ local_base }}/{{ inventory_hostname }}/"
+        remote_src: no
+        creates: "{{ local_base }}/{{ inventory_hostname }}/{{ csv_pattern }}"
+      delegate_to: localhost
+      when:
+        - binary_check.stat.exists
+        - download_result.changed
+
+    # ==================== 统计CSV文件 ====================
+    - name: 统计每个CSV文件的日志行数
+      shell: |
+        cd {{ local_base }}/{{ inventory_hostname }}
+        for file in *.csv; do
+          if [ -f "$file" ]; then
+            # 使用tail -n +2跳过首行，wc -l统计行数
+            LINES=$(tail -n +2 "$file" | wc -l)
+            echo "$file: $LINES"
+          fi
+        done
+      delegate_to: localhost
+      register: csv_line_counts
+      changed_when: false
+      when: binary_check.stat.exists
+
+    - name: 显示CSV文件统计结果
+      debug:
+        msg: |
+          CSV文件日志统计 - {{ inventory_hostname }}:
+          {{ csv_line_counts.stdout_lines | default([]) | join('\n') }}
+      when: binary_check.stat.exists
+
+    - name: 计算总日志数
+      shell: |
+        cd {{ local_base }}/{{ inventory_hostname }}
+        TOTAL=0
+        for file in *.csv; do
+          if [ -f "$file" ]; then
+            LINES=$(tail -n +2 "$file" | wc -l)
+            TOTAL=$((TOTAL + LINES))
+          fi
+        done
+        echo $TOTAL
+      delegate_to: localhost
+      register: total_log_count
+      changed_when: false
+      when: binary_check.stat.exists
+
+    # ==================== 打包local_base目录 ====================
+    - name: 打包本地下载目录
+      archive:
+        path: "{{ local_base }}"
+        dest: "{{ local_base }}_{{ ansible_date_time.epoch }}.tar.gz"
+        format: gz
+      delegate_to: localhost
+      become: no
+      when: binary_check.stat.exists
+      register: final_archive_result
+
+    - name: 显示打包结果
+      debug:
+        msg: "已打包至: {{ final_archive_result.dest }}"
+      when: binary_check.stat.exists
+
+    # ==================== 清理临时文件 ====================
+    - name: 清理远程临时文件
+      file:
+        path: "/tmp/csv_{{ inventory_hostname }}_*.tar.gz"
+        state: absent
+      when: binary_check.stat.exists
+
+    - name: 清理本地压缩包
+      file:
+        path: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        state: absent
+      delegate_to: localhost
+      when: binary_check.stat.exists
+
+    - name: 清理临时脚本
+      file:
+        path: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+        state: absent
+      when: binary_check.stat.exists
+
+    # ==================== 验证结果 ====================
+    - name: 统计文件数量
+      shell: "find {{ local_base }}/{{ inventory_hostname }} -name '*.csv' -type f | wc -l"
+      delegate_to: localhost
+      register: file_count
+      changed_when: false
+      when: binary_check.stat.exists
+
+  post_tasks:
+    - name: 显示最终结果标题
+      debug:
+        msg: "\n============================================================"
+      when: binary_check.stat.exists
+
+    - name: 显示主机信息
+      debug:
+        msg: "分析器执行结果汇总 - {{ inventory_hostname }}"
+      when: binary_check.stat.exists
+
+    - name: 显示分隔线
+      debug:
+        msg: "============================================================\n"
+      when: binary_check.stat.exists
+
+    - name: 显示执行状态
+      debug:
+        msg: |
+          【执行状态】
+            等待结果: {{ check_result.stdout_lines[-1] if check_result.stdout_lines is defined else 'N/A' }}
+            重试次数: {{ check_result.attempts | default(0) }}
+      when: binary_check.stat.exists
+
+    - name: 显示导出统计
+      debug:
+        msg: |
+          【导出统计】
+            导出文件数: {{ file_count.stdout | default('N/A') }}
+            总日志数:   {{ total_log_count.stdout | default('N/A') }}
+      when: binary_check.stat.exists
+
+    - name: 显示日志预览
+      debug:
+        msg: |
+          【日志预览】
+          {{ analyzer_log.stdout }}
+      when:
+        - binary_check.stat.exists
+        - analyzer_log is defined
+        - analyzer_log.stdout != ''
+
+    - name: 显示下载文件位置
+      debug:
+        msg: |
+          【下载文件位置】
+            {{ local_base }}/{{ inventory_hostname }}/
+      when:
+        - binary_check.stat.exists
+        - file_count is defined
+
+    - name: 显示文件列表
+      debug:
+        msg: |
+          【文件列表】
+          {% for file in export_files.stdout.split('\n') %}
+            - {{ file }}
+          {% endfor %}
+      when:
+        - binary_check.stat.exists
+        - file_count is defined
+
+    - name: 显示CSV文件详细统计
+      debug:
+        msg: |
+          【CSV文件详细统计】
+          {% for line in csv_line_counts.stdout_lines | default([]) %}
+            {{ line }}
+          {% endfor %}
+      when:
+        - binary_check.stat.exists
+        - csv_line_counts is defined
+
+    - name: 显示压缩包位置
+      debug:
+        msg: |
+          【压缩包位置】
+            {{ final_archive_result.dest }}
+      when:
+        - binary_check.stat.exists
+        - final_archive_result is defined
+
+    - name: 显示结束分隔线
+      debug:
+        msg: "============================================================\n"
+      when: binary_check.stat.exists

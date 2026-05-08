@@ -1,0 +1,200 @@
+# run_access_analyzer_enhanced.yml
+- hosts: IS
+  become: yes
+  vars:
+    # 路径配置
+    analyzer_dir: "/home/sino/access_log_analyzer_release"
+    analyzer_bin: "access_log_analyzer_linux_amd64"
+
+    # 日志和输出配置
+    log_dir: "/home/sino/fangwenrzhi"
+    output_file: "result_2026050600.csv"
+    run_log: "analyzer_2026050600.log"
+
+    # 分析参数
+    fields: "dip,domain"
+    start_time: "20260506200000"
+    end_time: "20260506210000"
+
+    # 监控配置
+    pid_file: "/tmp/access_analyzer_{{ ansible_date_time.date }}.pid"
+    max_wait_time: 30
+    sleep_interval: 3
+
+  pre_tasks:
+    - name: 显示配置信息
+      debug:
+        msg: |
+          启动访问日志分析器配置：
+          主机: {{ inventory_hostname }}
+          分析器: {{ analyzer_dir }}/{{ analyzer_bin }}
+          日志目录: {{ log_dir }}
+          时间范围: {{ start_time }} 到 {{ end_time }}
+          输出字段: {{ fields }}
+          输出文件: {{ output_file }}
+      run_once: yes
+
+  tasks:
+    - name: 检查分析器二进制文件
+      stat:
+        path: "{{ analyzer_dir }}/{{ analyzer_bin }}"
+      register: binary_check
+      failed_when: not binary_check.stat.exists
+      ignore_errors: no
+
+    - name: 创建日志目录
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+        owner: sino
+        group: sino
+      when: binary_check.stat.exists
+
+    - name: 检查是否已在运行
+      shell: |
+        pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" || echo "NOT_RUNNING"
+      register: existing_process
+      when: binary_check.stat.exists
+      changed_when: false
+      ignore_errors: yes
+
+    - name: 创建启动脚本
+      copy:
+        content: |
+          #!/bin/bash
+
+          # 切换到工作目录
+          cd {{ analyzer_dir }}
+
+          # 如果已在运行，则跳过
+          if pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" > /dev/null 2>&1; then
+            echo "分析器已在运行，跳过启动"
+            exit 0
+          fi
+
+          # 清理旧的日志文件
+          if [ -f "{{ analyzer_dir }}/{{ run_log }}" ]; then
+            echo "备份旧日志: {{ analyzer_dir }}/{{ run_log }}"
+            mv "{{ analyzer_dir }}/{{ run_log }}" "{{ analyzer_dir }}/{{ run_log }}.bak_$(date +%Y%m%d%H%M%S)"
+          fi
+
+          # 启动分析器
+          nohup ./{{ analyzer_bin }} \
+            -log_path {{ log_dir }} \
+            -fields "{{ fields }}" \
+            -start {{ start_time }} \
+            -end {{ end_time }} \
+            -output {{ output_file }} \
+            > ./{{ run_log }} 2>&1 &
+
+          # 获取进程ID
+          ANALYZER_PID=$!
+
+          # 等待几秒检查进程是否存活
+          sleep {{ sleep_interval }}
+          if kill -0 $ANALYZER_PID 2>/dev/null; then
+            echo "分析器启动成功，PID: $ANALYZER_PID"
+            echo $ANALYZER_PID > {{ pid_file }}
+
+            # 记录启动信息
+            echo "启动时间: $(date)" >> {{ pid_file }}
+            echo "启动命令: ./{{ analyzer_bin }} -log_path {{ log_dir }} -fields \"{{ fields }}\" -start {{ start_time }} -end {{ end_time }} -output {{ output_file }}" >> {{ pid_file }}
+          else
+            echo "分析器启动失败，请检查日志: {{ analyzer_dir }}/{{ run_log }}"
+            exit 1
+          fi
+        dest: "/tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh"
+        mode: '0755'
+      when:
+        - binary_check.stat.exists
+        - existing_process.stdout == "NOT_RUNNING" or existing_process.stdout == ""
+
+    - name: 执行启动脚本
+      shell: |
+        /tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh
+      register: start_result
+      args:
+        executable: /bin/bash
+      when:
+        - binary_check.stat.exists
+        - existing_process.stdout == "NOT_RUNNING" or existing_process.stdout == ""
+      async: "{{ max_wait_time }}"
+      poll: 0
+      ignore_errors: yes
+
+    - name: 检查进程状态
+      shell: |
+        if [ -f "{{ pid_file }}" ]; then
+          # 读取PID
+          PID=$(head -1 {{ pid_file }})
+          if kill -0 $PID 2>/dev/null; then
+            echo "RUNNING:$PID"
+          else
+            echo "STOPPED"
+          fi
+        else
+          # 尝试通过进程名查找
+          PID=$(pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" 2>/dev/null | head -1)
+          if [ -n "$PID" ]; then
+            echo "RUNNING:$PID"
+          else
+            echo "NOT_FOUND"
+          fi
+        fi
+      register: process_status
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 检查输出日志
+      shell: |
+        if [ -f "{{ analyzer_dir }}/{{ run_log }}" ]; then
+          echo "=== 最后10行日志 ==="
+          tail -n 10 "{{ analyzer_dir }}/{{ run_log }}"
+        else
+          echo "日志文件不存在"
+        fi
+      register: analyzer_log
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 检查输出文件
+      shell: |
+        if [ -f "{{ analyzer_dir }}/{{ output_file }}" ]; then
+          echo "文件已存在，大小: $(wc -l < {{ analyzer_dir }}/{{ output_file }}) 行"
+        else
+          echo "输出文件尚未生成"
+        fi
+      register: output_check
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 清理临时脚本
+      file:
+        path: "/tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh"
+        state: absent
+      when: binary_check.stat.exists
+
+  post_tasks:
+    - name: 显示启动结果
+      debug:
+        msg: |
+          访问日志分析器启动结果 - {{ inventory_hostname }}:
+          =========================================
+          状态: {{ '已运行' if 'RUNNING' in process_status.stdout else '未运行' }}
+          进程ID: {{ process_status.stdout.split(':')[1] if 'RUNNING' in process_status.stdout else 'N/A' }}
+          输出文件: {{ output_check.stdout }}
+
+          {% if 'RUNNING' in process_status.stdout %}
+          监控命令:
+          1. 查看进程: ps -p {{ process_status.stdout.split(':')[1] }}
+          2. 查看日志: tail -f {{ analyzer_dir }}/{{ run_log }}
+          3. 查看输出: ls -lh {{ analyzer_dir }}/{{ output_file }}
+
+          日志预览:
+          {{ analyzer_log.stdout }}
+          {% endif %}
+
+          下载结果文件请执行:
+          ansible-playbook download_results.yml -e "start_time={{ start_time }}"
+      when: binary_check.stat.exists

@@ -1,0 +1,64 @@
+# sync_csvs_no_rsync.yml
+- hosts: IS
+  vars:
+    remote_dir: "/home/sino/access_log_analyzer_release/"
+    local_base: "/home/sino/2026050600"
+    csv_pattern: "export_sip_*.csv"
+
+  tasks:
+    # 1. 在远程打包
+    - name: 打包 CSV 文件
+      archive:
+        path: "{{ remote_dir }}"
+        dest: "/tmp/csv_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.tar.gz"
+        format: gz
+        pattern: "{{ csv_pattern }}"
+
+    # 2. 创建本地目录
+    - name: 创建本地目录
+      delegate_to: localhost
+      file:
+        path: "{{ local_base }}/{{ inventory_hostname }}"
+        state: directory
+        mode: '0755'
+
+    # 3. 下载
+    - name: 下载压缩包
+      fetch:
+        src: "{{ archive.dest }}"
+        dest: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        flat: yes
+      register: download_result
+
+    # 4. 本地解压
+    - name: 本地解压
+      unarchive:
+        src: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        dest: "{{ local_base }}/{{ inventory_hostname }}/"
+        remote_src: no
+        creates: "{{ local_base }}/{{ inventory_hostname }}/{{ csv_pattern }}"
+      delegate_to: localhost
+      when: download_result.changed
+
+    # 5. 清理
+    - name: 清理远程临时文件
+      file:
+        path: "/tmp/csv_{{ inventory_hostname }}_*.tar.gz"
+        state: absent
+
+    - name: 清理本地压缩包
+      file:
+        path: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
+        state: absent
+      delegate_to: localhost
+
+    # 6. 验证
+    - name: 统计文件数量
+      shell: "find {{ local_base }}/{{ inventory_hostname }} -name '*.csv' -type f | wc -l"
+      delegate_to: localhost
+      register: file_count
+      changed_when: false
+
+    - name: 显示结果
+      debug:
+        msg: "主机 {{ inventory_hostname }}: 下载了 {{ file_count.stdout }} 个 CSV 文件"

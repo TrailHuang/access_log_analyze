@@ -1,0 +1,166 @@
+# run_analyzer_with_monitoring.yml
+- hosts: IS
+  become: yes
+  vars:
+    # 路径配置
+    analyzer_dir: "/home/sino/access_log_analyzer_release"
+    analyzer_binary: "access_log_analyzer_linux_amd64_new"
+
+    # 日志配置
+    log_dir: "/home/sino/fangwenrzhi"
+    output_log_file: "analyzer_2026050700.log"
+
+    # 时间参数
+    start_time: "20260506195500"
+    end_time: "20260506200500"
+    export_start_time: "20260506200000"
+    export_end_time: "20260506200200"
+
+    # IP地址参数
+    destination_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
+    source_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
+
+    # 其他参数
+    filter_logic: 1
+
+    # 监控配置
+    pid_file: "/tmp/analyzer_{{ ansible_date_time.date }}.pid"
+    max_wait_time: 30
+    sleep_interval: 5
+
+  pre_tasks:
+    - name: 检查环境
+      debug:
+        msg: |
+          启动分析器配置：
+          主机: {{ inventory_hostname }}
+          分析器: {{ analyzer_dir }}/{{ analyzer_binary }}
+          时间范围: {{ start_time }} 到 {{ end_time }}
+          导出时间: {{ export_start_time }} 到 {{ export_end_time }}
+          源IP: {{ source_ip }}
+          目标IP: {{ destination_ip }}
+      run_once: yes
+
+  tasks:
+    - name: 检查分析器二进制文件
+      stat:
+        path: "{{ analyzer_dir }}/{{ analyzer_binary }}"
+      register: binary_check
+      failed_when: not binary_check.stat.exists
+      ignore_errors: no
+
+    - name: 创建日志目录
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+        owner: sino
+        group: sino
+      when: binary_check.stat.exists
+
+    - name: 生成启动脚本
+      copy:
+        content: |
+          #!/bin/bash
+          cd {{ analyzer_dir }}
+
+          # 检查是否已在运行
+          if pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" > /dev/null; then
+            echo "分析器已经在运行，跳过启动"
+            exit 0
+          fi
+
+          # 启动分析器
+          nohup ./{{ analyzer_binary }} \
+            -log_path {{ log_dir }} \
+            -export \
+            -start {{ start_time }} \
+            -end {{ end_time }} \
+            -export_start {{ export_start_time }} \
+            -export_end {{ export_end_time }} \
+            -dip "{{ destination_ip }}" \
+            -sip "{{ source_ip }}" \
+            -export_filter_logic {{ filter_logic }} \
+            > ./{{ output_log_file }} 2>&1 &
+
+          # 获取进程ID
+          ANALYZER_PID=$!
+          echo $ANALYZER_PID
+
+          # 等待几秒检查进程是否存活
+          sleep 3
+          if kill -0 $ANALYZER_PID 2>/dev/null; then
+            echo "分析器启动成功，PID: $ANALYZER_PID"
+            echo $ANALYZER_PID > {{ pid_file }}
+          else
+            echo "分析器启动失败"
+            exit 1
+          fi
+        dest: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+        mode: '0755'
+      when: binary_check.stat.exists
+
+    - name: 执行启动脚本
+      shell: |
+        /tmp/start_analyzer_{{ ansible_date_time.date }}.sh
+      register: analyzer_start_result
+      args:
+        executable: /bin/bash
+      when: binary_check.stat.exists
+      async: "{{ max_wait_time }}"
+      poll: 0
+      ignore_errors: yes
+
+    - name: 检查进程是否运行
+      shell: |
+        # 从日志文件中获取进程ID
+        if [ -f "{{ pid_file }}" ]; then
+          cat {{ pid_file }}
+        else
+          # 尝试通过进程名查找
+          pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" || echo "NOT_FOUND"
+        fi
+      register: analyzer_pid
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 检查输出日志
+      shell: |
+        tail -n 10 {{ analyzer_dir }}/{{ output_log_file }} 2>/dev/null || echo "日志文件不存在"
+      register: analyzer_log
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 验证导出文件
+      shell: |
+        find {{ analyzer_dir }} -name "export_sip_{{ source_ip | replace(':', '') }}_*.csv" -mmin -5 2>/dev/null | wc -l
+      register: export_files
+      when: binary_check.stat.exists
+      changed_when: false
+
+    - name: 清理临时脚本
+      file:
+        path: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+        state: absent
+      when: binary_check.stat.exists
+
+  post_tasks:
+    - name: 显示启动结果
+      debug:
+        msg: |
+          分析器启动结果 - {{ inventory_hostname }}:
+          =========================================
+          状态: {{ '成功' if analyzer_pid.stdout != 'NOT_FOUND' else '失败' }}
+          进程ID: {{ analyzer_pid.stdout }}
+          导出文件数: {{ export_files.stdout }}
+
+          日志最后10行:
+          {{ analyzer_log.stdout }}
+
+          {% if analyzer_pid.stdout != 'NOT_FOUND' %}
+          监控命令:
+          1. 查看进程: ps -p {{ analyzer_pid.stdout }}
+          2. 查看日志: tail -f {{ analyzer_dir }}/{{ output_log_file }}
+          3. 查看导出: ls -lh {{ analyzer_dir }}/export_sip_*.csv
+          {% endif %}
+      when: binary_check.stat.exists
