@@ -216,7 +216,14 @@ func mergeCSVFilesByType(files []string, fieldList []string, sortType string, to
 		}
 	})
 
-	outputFile := fmt.Sprintf("merged_%s_%s.csv", strings.Join(fieldList, "_"), sortType)
+	outputFile := ""
+	if redistributeEmpty {
+		outputFile = fmt.Sprintf("merged_%s_%s_redistribute.csv", strings.Join(fieldList, "_"), sortType)
+
+	} else {
+		outputFile = fmt.Sprintf("merged_%s_%s.csv", strings.Join(fieldList, "_"), sortType)
+	}
+
 	if err := ExportMergedCSV(records, fieldList, outputFile, sortType, durationSeconds, output); err != nil {
 		return fmt.Errorf("导出CSV失败: %v", err)
 	}
