@@ -37,15 +37,15 @@ func MatchFilter(value string, filters []string, reverse bool) bool {
 
 // matchPattern 匹配单个模式,支持*通配符
 func matchPattern(value, pattern string) bool {
-	// 如果没有*,完全匹配
+	// 如果没有*,完全匹配（忽略大小写）
 	if !strings.Contains(pattern, "*") {
-		return value == pattern
+		return strings.EqualFold(value, pattern)
 	}
 
 	// 从缓存获取或编译正则表达式
 	re, ok := compiledRegexCache.Load(pattern)
 	if !ok {
-		regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
+		regexPattern := "(?i)^" + regexp.QuoteMeta(pattern) + "$"
 		regexPattern = strings.ReplaceAll(regexPattern, `\*`, ".*")
 		compiled, err := regexp.Compile(regexPattern)
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"archive/tar"
 	"io"
@@ -70,6 +71,35 @@ func getFieldString(line []byte, positions []fieldPos, idx int) string {
 		return ""
 	}
 	return trimSpaceBytes(line[positions[idx].start:positions[idx].end])
+}
+
+// trimSpaceBytesUnsafe 零拷贝版本的 trimSpaceBytes
+// 警告：返回的 string 与输入 []byte 共享底层内存，调用者必须确保
+// 在使用返回的 string 期间，原始 []byte 不被修改。
+// 当 string 仅在当前迭代临时使用（如过滤比较）时安全；
+// 若 string 需要持久化（如存入 map），必须使用 strings.Clone 或 trimSpaceBytes。
+func trimSpaceBytesUnsafe(data []byte) string {
+	start := 0
+	end := len(data)
+	for start < end && (data[start] == ' ' || data[start] == '\t' || data[start] == '\r' || data[start] == '\n') {
+		start++
+	}
+	for end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\r' || data[end-1] == '\n') {
+		end--
+	}
+	if end == start {
+		return ""
+	}
+	return unsafe.String(&data[start], end-start)
+}
+
+// getFieldStringUnsafe 零拷贝版本的 getFieldString
+// 同 trimSpaceBytesUnsafe 的警告：返回值与 line 共享内存，不可持久化。
+func getFieldStringUnsafe(line []byte, positions []fieldPos, idx int) string {
+	if idx < 0 || idx >= len(positions) {
+		return ""
+	}
+	return trimSpaceBytesUnsafe(line[positions[idx].start:positions[idx].end])
 }
 
 // ProcessTarGz 处理单个tar.gz文件
@@ -132,39 +162,27 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		return sortedFields[i].idx < sortedFields[j].idx
 	})
 
-	// 预计算需要哪些额外过滤字段索引（避免循环中查 map）
+	// 预计算过滤字段索引
 	type filterField struct {
-		name    string
-		idx     int
-		enabled bool
+		name string
+		idx  int
 	}
 	filterFields := []filterField{
-		{"sip", 1, len(filters.SIPFilters) > 0},
-		{"dip", 2, len(filters.DIPFilters) > 0},
-		{"domain", 6, len(filters.DomainFilters) > 0},
-		{"sport", 4, len(filters.SportFilters) > 0},
-		{"dport", 5, len(filters.DportFilters) > 0},
-		{"url", 7, len(filters.URLFilters) > 0},
-	}
-	// 检查过滤字段是否已在统计字段中
-	fieldIndexSet := make(map[string]bool, len(sortedFields))
-	for _, fp := range sortedFields {
-		fieldIndexSet[fp.name] = true
-	}
-	// 过滤字段的 enabled 标志只控制是否需要额外提取字段值
-	// 过滤逻辑始终需要执行，无论字段是否在统计字段中
-	for i := range filterFields {
-		if fieldIndexSet[filterFields[i].name] {
-			filterFields[i].enabled = false // 已在统计字段中，不需要额外提取
-		}
+		{"sip", 1},
+		{"dip", 2},
+		{"domain", 6},
+		{"sport", 4},
+		{"dport", 5},
+		{"url", 7},
 	}
 	needFilter := len(filters.SIPFilters) > 0 || len(filters.DIPFilters) > 0 || len(filters.DomainFilters) > 0 ||
 		len(filters.SportFilters) > 0 || len(filters.DportFilters) > 0 || len(filters.URLFilters) > 0 ||
 		filters.SIPFilterMode != 0 || filters.DIPFilterMode != 0 || filters.DomainFilterMode != 0 ||
 		filters.SportFilterMode != 0 || filters.DportFilterMode != 0 || filters.URLFilterMode != 0
 
-	// 预分配 field positions 缓冲区，避免每行分配
+	// 预分配缓冲区，避免每行分配
 	positions := make([]fieldPos, 0, 32)
+	fields := make([]string, 21) // 预分配字段数组，循环内复用
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -193,23 +211,19 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 			continue
 		}
 
+		// 一次性提取所有字段（使用 unsafe.String 零拷贝，仅当前迭代内有效）
+		for i := 0; i < 21 && i < len(positions); i++ {
+			fields[i] = getFieldStringUnsafe(lineBytes, positions, i)
+		}
+		for i := len(positions); i < 21; i++ {
+			fields[i] = ""
+		}
+
 		// ---- 过滤阶段：在构建 key 之前先做过滤，减少不必要的工作 ----
 		if needFilter {
 			skip := false
 			for _, ff := range filterFields {
-				// 获取字段值：如果字段已在统计字段中，从 positions 中提取；否则使用 getFieldString
-				var value string
-				if ff.enabled {
-					value = getFieldString(lineBytes, positions, ff.idx)
-				} else {
-					// 字段已在统计字段中，从 positions 中提取对应索引的值
-					for _, fp := range sortedFields {
-						if fp.name == ff.name {
-							value = getFieldString(lineBytes, positions, fp.idx)
-							break
-						}
-					}
-				}
+				value := fields[ff.idx]
 
 				switch ff.name {
 				case "sip":
@@ -253,48 +267,42 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 			skip := false
 
 			if filters.SIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 1)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[1] == "" || fields[1] == "-"
 				if (filters.SIPFilterMode == 1 && !isEmpty) || (filters.SIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && filters.DIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 2)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[2] == "" || fields[2] == "-"
 				if (filters.DIPFilterMode == 1 && !isEmpty) || (filters.DIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && filters.DomainFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 6)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[6] == "" || fields[6] == "-"
 				if (filters.DomainFilterMode == 1 && !isEmpty) || (filters.DomainFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && filters.SportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 4)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[4] == "" || fields[4] == "-"
 				if (filters.SportFilterMode == 1 && !isEmpty) || (filters.SportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && filters.DportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 5)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[5] == "" || fields[5] == "-"
 				if (filters.DportFilterMode == 1 && !isEmpty) || (filters.DportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && filters.URLFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 7)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[7] == "" || fields[7] == "-"
 				if (filters.URLFilterMode == 1 && !isEmpty) || (filters.URLFilterMode == 2 && isEmpty) {
 					skip = true
 				}
@@ -305,14 +313,13 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 			}
 		}
 
-		// ---- 构建 key 和提取字段值 ----
-		// 提取统计字段值
+		// ---- 构建 key 和提取字段值（使用 strings.Clone 生成安全副本持久化） ----
 		keyBuilder := KeyBuilderPool.Get().(*strings.Builder)
 		keyBuilder.Reset()
 
 		fieldValues := make(map[string]string, len(sortedFields)+3)
 		for i, fp := range sortedFields {
-			value := getFieldString(lineBytes, positions, fp.idx)
+			value := strings.Clone(fields[fp.idx])
 			if value == "" {
 				value = "-"
 			}
@@ -324,9 +331,13 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		}
 
 		// 提取过滤字段值（如果不在统计字段中）
+		sortedFieldSet := make(map[int]bool, len(sortedFields))
+		for _, fp := range sortedFields {
+			sortedFieldSet[fp.idx] = true
+		}
 		for _, ff := range filterFields {
-			if ff.enabled {
-				value := getFieldString(lineBytes, positions, ff.idx)
+			if !sortedFieldSet[ff.idx] {
+				value := strings.Clone(fields[ff.idx])
 				if value == "" {
 					value = "-"
 				}
@@ -338,10 +349,8 @@ func processLogFile(reader io.Reader, statsMap map[string]*models.TrafficStats, 
 		KeyBuilderPool.Put(keyBuilder)
 
 		// ---- 提取流量数据 ----
-		upTrafficStr := getFieldString(lineBytes, positions, 18)
-		downTrafficStr := getFieldString(lineBytes, positions, 19)
-		upTraffic, _ := strconv.ParseInt(upTrafficStr, 10, 64)
-		downTraffic, _ := strconv.ParseInt(downTrafficStr, 10, 64)
+		upTraffic, _ := strconv.ParseInt(fields[18], 10, 64)
+		downTraffic, _ := strconv.ParseInt(fields[19], 10, 64)
 
 		// ---- 更新统计 ----
 		if stats, exists := statsMap[key]; exists {

@@ -212,7 +212,7 @@ func main() {
 
 	// 如果是导出模式，处理并退出
 	if *exportMode {
-		if err := handleExportMode(dirPath, *exportFile, *exportStart, *exportEnd, *workers, filters); err != nil {
+		if err := handleExportMode(dirPath, *exportFile, *exportStart, *exportEnd, *workers, filters, mergedConfig.StartTime, mergedConfig.EndTime); err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}
@@ -431,7 +431,7 @@ func main() {
 }
 
 // handleExportMode 处理话单导出模式
-func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, workers int, filters *models.LogFilters) error {
+func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, workers int, filters *models.LogFilters, startTime, endTime string) error {
 	fmt.Printf("=== 话单导出模式 ===\n")
 	fmt.Printf("日志路径: %s\n", dirPath)
 
@@ -492,7 +492,21 @@ func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, worker
 		}
 	}
 
-	startTime := time.Now()
+	// 解析文件名时间范围（用于按文件名预过滤tar.gz文件）
+	startTimeInt, _ := analyzer.ParseTime(startTime)
+	endTimeInt, _ := analyzer.ParseTime(endTime)
+
+	if startTime != "" || endTime != "" {
+		fmt.Printf("文件名时间范围过滤:\n")
+		if startTime != "" {
+			fmt.Printf("  开始时间: %s\n", startTime)
+		}
+		if endTime != "" {
+			fmt.Printf("  结束时间: %s\n", endTime)
+		}
+	}
+
+	startTimeClock := time.Now()
 
 	var tarGzFiles []string
 	info, err := os.Stat(dirPath)
@@ -506,6 +520,10 @@ func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, worker
 				return err
 			}
 			if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".tar.gz") {
+				// 按文件名时间过滤
+				if !analyzer.IsFileInTimeRange(info.Name(), startTimeInt, endTimeInt) {
+					return nil
+				}
 				tarGzFiles = append(tarGzFiles, path)
 			}
 			return nil
@@ -536,7 +554,7 @@ func handleExportMode(dirPath, exportFile, exportStart, exportEnd string, worker
 		return fmt.Errorf("导出话单失败: %w", err)
 	}
 
-	elapsed := time.Since(startTime)
+	elapsed := time.Since(startTimeClock)
 	fmt.Printf("\n导出完成: 共导出 %d 条记录 (%.2fs)\n", totalExported, elapsed.Seconds())
 	fmt.Printf("输出文件: %s\n", exportFile)
 

@@ -10,8 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ExportConfig 导出配置
@@ -82,14 +84,31 @@ func processFilesForExport(taskCh <-chan string, workerID int, config *ExportCon
 	var totalExported int64
 	localRecords := make([][]string, 0, 100000)
 
-	seq := int(atomicAddInt64(fileSeqCounter, 1) - 1)
-	outputPath := generateOutputFileName(config.OutputFile, seq)
-	file, writer, err := createCSVFile(outputPath)
-	if err != nil {
-		return 0, fmt.Errorf("创建输出文件失败: %w", err)
+	var file *os.File
+	var writer *csv.Writer
+	var outputPath string
+	var seq int
+	fileCreated := false
+
+	ensureFile := func() error {
+		if fileCreated {
+			return nil
+		}
+		seq = int(atomicAddInt64(fileSeqCounter, 1) - 1)
+		outputPath = generateOutputFileName(config.OutputFile, seq)
+		var err error
+		file, writer, err = createCSVFile(outputPath)
+		if err != nil {
+			return fmt.Errorf("创建输出文件失败: %w", err)
+		}
+		fileCreated = true
+		return nil
 	}
 
 	writeRecord := func(rec []string) error {
+		if err := ensureFile(); err != nil {
+			return err
+		}
 		localRecords = append(localRecords, rec)
 		if len(localRecords) >= 100000 {
 			for _, r := range localRecords {
@@ -102,6 +121,7 @@ func processFilesForExport(taskCh <-chan string, workerID int, config *ExportCon
 			file.Close()
 			seq = int(atomicAddInt64(fileSeqCounter, 1) - 1)
 			outputPath = generateOutputFileName(config.OutputFile, seq)
+			var err error
 			file, writer, err = createCSVFile(outputPath)
 			if err != nil {
 				return fmt.Errorf("创建输出文件失败: %w", err)
@@ -127,7 +147,14 @@ func processFilesForExport(taskCh <-chan string, workerID int, config *ExportCon
 		writer.Flush()
 		totalExported += int64(len(localRecords))
 	}
-	file.Close()
+
+	if fileCreated {
+		file.Close()
+		// 如果只写了表头没有实际数据，删除空文件
+		if totalExported == 0 {
+			os.Remove(outputPath)
+		}
+	}
 
 	return totalExported, nil
 }
@@ -222,6 +249,7 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 	positions := make([]fieldPos, 0, 32)
+	fields := make([]string, 21) // 预分配字段数组，循环内复用
 
 	needFilter := config.Filters.HasFilters()
 	needTimeFilter := config.ExportStart != "" || config.ExportEnd != ""
@@ -264,11 +292,16 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 			continue
 		}
 
+		// 一次性提取所有字段（使用 unsafe.String 零拷贝，仅当前迭代内有效）
+		for i := 0; i < 21; i++ {
+			fields[i] = getFieldStringUnsafe(lineBytes, positions, i)
+		}
+
 		if needFilter {
 			if config.Filters.ExportFilterLogic == 1 {
 				matched := false
 				for _, ff := range filterFields {
-					value := getFieldString(lineBytes, positions, ff.idx)
+					value := fields[ff.idx]
 
 					switch ff.name {
 					case "sip":
@@ -307,7 +340,7 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 			} else {
 				skip := false
 				for _, ff := range filterFields {
-					value := getFieldString(lineBytes, positions, ff.idx)
+					value := fields[ff.idx]
 
 					switch ff.name {
 					case "sip":
@@ -350,48 +383,42 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 			skip := false
 
 			if config.Filters.SIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 1)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[1] == "" || fields[1] == "-"
 				if (config.Filters.SIPFilterMode == 1 && !isEmpty) || (config.Filters.SIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 2)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[2] == "" || fields[2] == "-"
 				if (config.Filters.DIPFilterMode == 1 && !isEmpty) || (config.Filters.DIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DomainFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 6)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[6] == "" || fields[6] == "-"
 				if (config.Filters.DomainFilterMode == 1 && !isEmpty) || (config.Filters.DomainFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.SportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 4)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[4] == "" || fields[4] == "-"
 				if (config.Filters.SportFilterMode == 1 && !isEmpty) || (config.Filters.SportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 5)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[5] == "" || fields[5] == "-"
 				if (config.Filters.DportFilterMode == 1 && !isEmpty) || (config.Filters.DportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.URLFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 7)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[7] == "" || fields[7] == "-"
 				if (config.Filters.URLFilterMode == 1 && !isEmpty) || (config.Filters.URLFilterMode == 2 && isEmpty) {
 					skip = true
 				}
@@ -403,15 +430,15 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 		}
 
 		if needTimeFilter {
-			utcTime := getFieldString(lineBytes, positions, 9)
-			if !matchTimeRange(utcTime, config.ExportStart, config.ExportEnd) {
+			if !matchTimeRange(fields[9], config.ExportStart, config.ExportEnd) {
 				continue
 			}
 		}
 
+		// 构建安全 record（克隆 unsafe string 为独立副本，使 callback 可安全持有）
 		record := make([]string, 21)
-		for i := 0; i < 21 && i < len(positions); i++ {
-			record[i] = getFieldString(lineBytes, positions, i)
+		for i := 0; i < 21; i++ {
+			record[i] = strings.Clone(fields[i])
 		}
 
 		if err := callback(record); err != nil {
@@ -468,6 +495,7 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 
 	var records [][]string
 	positions := make([]fieldPos, 0, 32)
+	fields := make([]string, 21) // 预分配字段数组，循环内复用
 
 	needFilter := config.Filters.HasFilters()
 	needTimeFilter := config.ExportStart != "" || config.ExportEnd != ""
@@ -508,12 +536,17 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 			continue
 		}
 
+		// 一次性提取所有字段（使用 unsafe.String 零拷贝，仅当前迭代内有效）
+		for i := 0; i < 21; i++ {
+			fields[i] = getFieldStringUnsafe(lineBytes, positions, i)
+		}
+
 		if needFilter {
 			if config.Filters.ExportFilterLogic == 1 {
 				// 或模式：满足任一过滤条件即可
 				matched := false
 				for _, ff := range filterFields {
-					value := getFieldString(lineBytes, positions, ff.idx)
+					value := fields[ff.idx]
 
 					switch ff.name {
 					case "sip":
@@ -553,7 +586,7 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 				// 与模式（默认）：所有过滤条件都需满足
 				skip := false
 				for _, ff := range filterFields {
-					value := getFieldString(lineBytes, positions, ff.idx)
+					value := fields[ff.idx]
 
 					switch ff.name {
 					case "sip":
@@ -596,48 +629,42 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 			skip := false
 
 			if config.Filters.SIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 1)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[1] == "" || fields[1] == "-"
 				if (config.Filters.SIPFilterMode == 1 && !isEmpty) || (config.Filters.SIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DIPFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 2)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[2] == "" || fields[2] == "-"
 				if (config.Filters.DIPFilterMode == 1 && !isEmpty) || (config.Filters.DIPFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DomainFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 6)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[6] == "" || fields[6] == "-"
 				if (config.Filters.DomainFilterMode == 1 && !isEmpty) || (config.Filters.DomainFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.SportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 4)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[4] == "" || fields[4] == "-"
 				if (config.Filters.SportFilterMode == 1 && !isEmpty) || (config.Filters.SportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.DportFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 5)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[5] == "" || fields[5] == "-"
 				if (config.Filters.DportFilterMode == 1 && !isEmpty) || (config.Filters.DportFilterMode == 2 && isEmpty) {
 					skip = true
 				}
 			}
 
 			if !skip && config.Filters.URLFilterMode != 0 {
-				value := getFieldString(lineBytes, positions, 7)
-				isEmpty := value == "" || value == "-"
+				isEmpty := fields[7] == "" || fields[7] == "-"
 				if (config.Filters.URLFilterMode == 1 && !isEmpty) || (config.Filters.URLFilterMode == 2 && isEmpty) {
 					skip = true
 				}
@@ -649,15 +676,15 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 		}
 
 		if needTimeFilter {
-			utcTime := getFieldString(lineBytes, positions, 9)
-			if !matchTimeRange(utcTime, config.ExportStart, config.ExportEnd) {
+			if !matchTimeRange(fields[9], config.ExportStart, config.ExportEnd) {
 				continue
 			}
 		}
 
+		// 构建安全 record（克隆 unsafe string 为独立副本）
 		record := make([]string, 21)
-		for i := 0; i < 21 && i < len(positions); i++ {
-			record[i] = getFieldString(lineBytes, positions, i)
+		for i := 0; i < 21; i++ {
+			record[i] = strings.Clone(fields[i])
 		}
 
 		records = append(records, record)
@@ -688,10 +715,25 @@ func matchTimeRange(utcTime, exportStart, exportEnd string) bool {
 }
 
 // normalizeUTCTime 将日志中的UTC时间标准化为 YYYYMMDDHHmmss 格式
+// 支持格式：Unix时间戳(秒/毫秒)、YYYY-MM-DD HH:mm:ss、YYYYMMDDHHmmss 等
 func normalizeUTCTime(utcTime string) string {
 	utcTime = strings.TrimSpace(utcTime)
 	if utcTime == "" || utcTime == "-" {
 		return ""
+	}
+
+	// 检查是否为Unix时间戳（10位秒级 或 13位毫秒级）
+	if isAllDigits(utcTime) && (len(utcTime) == 10 || len(utcTime) == 13) {
+		ts, err := strconv.ParseInt(utcTime, 10, 64)
+		if err != nil {
+			return ""
+		}
+		// 毫秒级时间戳（13位）
+		if len(utcTime) == 13 {
+			ts = ts / 1000
+		}
+		// 转换为本地时间的 YYYYMMDDHHmmss 格式
+		return time.Unix(ts, 0).Format("20060102150405")
 	}
 
 	if len(utcTime) >= 14 {
@@ -702,4 +744,14 @@ func normalizeUTCTime(utcTime string) string {
 	}
 
 	return utcTime
+}
+
+// isAllDigits 检查字符串是否全部为数字
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
