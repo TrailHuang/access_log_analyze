@@ -18,11 +18,12 @@ import (
 
 // ExportConfig 导出配置
 type ExportConfig struct {
-	OutputFile  string
-	ExportStart string // 导出时间范围开始 YYYYMMDDHHmmss
-	ExportEnd   string // 导出时间范围结束 YYYYMMDDHHmmss
-	Filters     *models.LogFilters
-	Workers     int
+	OutputFile         string
+	ExportStart        string // 导出时间范围开始 YYYYMMDDHHmmss
+	ExportEnd          string // 导出时间范围结束 YYYYMMDDHHmmss
+	Filters            *models.LogFilters
+	Workers            int
+	TimeFormatReadable bool // 是否将UTC时间戳转为可读格式
 }
 
 // ExportTarGzFiles 并发导出话单
@@ -441,6 +442,11 @@ func processLogForExportWithCallback(reader io.Reader, config *ExportConfig, cal
 			record[i] = strings.Clone(fields[i])
 		}
 
+		// 将第10个字段(UTC时间)从Unix时间戳转为可读格式
+		if config.TimeFormatReadable && len(record[9]) > 0 && record[9] != "-" {
+			record[9] = formatUTCTimeReadable(record[9])
+		}
+
 		if err := callback(record); err != nil {
 			return count, err
 		}
@@ -687,6 +693,11 @@ func processLogForExport(reader io.Reader, config *ExportConfig) ([][]string, er
 			record[i] = strings.Clone(fields[i])
 		}
 
+		// 将第10个字段(UTC时间)从Unix时间戳转为可读格式
+		if config.TimeFormatReadable && len(record[9]) > 0 && record[9] != "-" {
+			record[9] = formatUTCTimeReadable(record[9])
+		}
+
 		records = append(records, record)
 	}
 
@@ -754,4 +765,25 @@ func isAllDigits(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+// formatUTCTimeReadable 将UTC时间转换为可读的 YYYY-MM-DD HH:mm:ss 格式
+func formatUTCTimeReadable(utcTime string) string {
+	utcTime = strings.TrimSpace(utcTime)
+	if utcTime == "" || utcTime == "-" {
+		return utcTime
+	}
+
+	if isAllDigits(utcTime) && (len(utcTime) == 10 || len(utcTime) == 13) {
+		ts, err := strconv.ParseInt(utcTime, 10, 64)
+		if err != nil {
+			return utcTime
+		}
+		if len(utcTime) == 13 {
+			ts = ts / 1000
+		}
+		return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
+	}
+
+	return utcTime
 }
