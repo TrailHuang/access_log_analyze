@@ -285,22 +285,6 @@
       changed_when: false
       when: binary_check.stat.exists
 
-    # ==================== 打包local_base目录 ====================
-    - name: 打包本地下载目录
-      archive:
-        path: "{{ local_base }}"
-        dest: "{{ local_base }}_{{ epoch_timestamp }}.tar.gz"
-        format: gz
-      delegate_to: localhost
-      become: no
-      when: binary_check.stat.exists
-      register: final_archive_result
-
-    - name: 显示打包结果
-      debug:
-        msg: "已打包至: {{ final_archive_result.dest }}"
-      when: binary_check.stat.exists
-
     # ==================== 清理临时文件 ====================
     - name: 清理远程临时文件
       file:
@@ -321,6 +305,22 @@
         state: absent
       when: binary_check.stat.exists
 
+    # ==================== 打包local_base目录 ====================
+    - name: 打包本地下载目录
+      archive:
+        path: "{{ local_base }}"
+        dest: "{{ local_base }}_{{ epoch_timestamp }}.tar.gz"
+        format: gz
+      delegate_to: localhost
+      become: no
+      when: binary_check.stat.exists
+      register: final_archive_result
+
+    - name: 显示打包结果
+      debug:
+        msg: "已打包至: {{ final_archive_result.dest }}"
+      when: binary_check.stat.exists
+      
     # ==================== 验证结果 ====================
     - name: 统计文件数量
       shell: "find {{ local_base }}/{{ inventory_hostname }} -name '*.csv' -type f | wc -l"
@@ -330,29 +330,7 @@
       when: binary_check.stat.exists
 
   post_tasks:
-    - name: 显示最终结果标题
-      debug:
-        msg: "\n============================================================"
-      when: binary_check.stat.exists
-
-    - name: 显示主机信息
-      debug:
-        msg: "分析器执行结果汇总 - {{ inventory_hostname }}"
-      when: binary_check.stat.exists
-
-    - name: 显示分隔线
-      debug:
-        msg: "============================================================\n"
-      when: binary_check.stat.exists
-
-    - name: 显示执行状态
-      debug:
-        msg: |
-          【执行状态】
-            等待结果: {{ check_result.stdout_lines[-1] if check_result.stdout_lines is defined else 'N/A' }}
-            重试次数: {{ check_result.attempts | default(0) }}
-      when: binary_check.stat.exists
-
+   
     - name: 显示导出统计
       debug:
         msg: |
@@ -361,57 +339,3 @@
             总日志数:   {{ total_log_count.stdout | default('N/A') }}
       when: binary_check.stat.exists
 
-    - name: 显示日志预览
-      debug:
-        msg: |
-          【日志预览】
-          {{ analyzer_log.stdout }}
-      when:
-        - binary_check.stat.exists
-        - analyzer_log is defined
-        - analyzer_log.stdout != ''
-
-    - name: 显示下载文件位置
-      debug:
-        msg: |
-          【下载文件位置】
-            {{ local_base }}/{{ inventory_hostname }}/
-      when:
-        - binary_check.stat.exists
-        - file_count is defined
-
-    - name: 显示文件列表
-      debug:
-        msg: |
-          【文件列表】
-          {% for file in export_files.stdout.split('\n') %}
-            - {{ file }}
-          {% endfor %}
-      when:
-        - binary_check.stat.exists
-        - file_count is defined
-
-    - name: 显示CSV文件详细统计
-      debug:
-        msg: |
-          【CSV文件详细统计】
-          {% for line in csv_line_counts.stdout_lines | default([]) %}
-            {{ line }}
-          {% endfor %}
-      when:
-        - binary_check.stat.exists
-        - csv_line_counts is defined
-
-    - name: 显示压缩包位置
-      debug:
-        msg: |
-          【压缩包位置】
-            {{ final_archive_result.dest }}
-      when:
-        - binary_check.stat.exists
-        - final_archive_result is defined
-
-    - name: 显示结束分隔线
-      debug:
-        msg: "============================================================\n"
-      when: binary_check.stat.exists
