@@ -29,7 +29,6 @@
     sleep_interval: 5
 
     # 下载配置
-    local_base: "/home/sino/access_log_analyzer_release/{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
     csv_pattern: "export_sip_*.csv"
 
     # 等待配置（可调整）
@@ -37,6 +36,17 @@
     wait_delay: 5      # 每次间隔秒数
 
   pre_tasks:
+    - name: 生成固定时间戳
+      set_fact:
+        execution_timestamp: "{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+        epoch_timestamp: "{{ ansible_date_time.epoch }}"
+      run_once: yes
+
+    - name: 设置本地基础目录
+      set_fact:
+        local_base: "/home/sino/access_log_analyzer_release/{{ execution_timestamp }}"
+      run_once: yes
+
     - name: 检查环境
       debug:
         msg: |
@@ -48,6 +58,7 @@
           源IP: {{ source_ip }}
           目标IP: {{ destination_ip }}
           本地下载目录: {{ local_base }}
+          执行时间戳: {{ execution_timestamp }}
           最大等待时间: {{ wait_retries * wait_delay }}秒
       run_once: yes
 
@@ -210,7 +221,7 @@
     - name: 打包导出文件
       shell: |
         cd {{ analyzer_dir }}
-        tar -czf /tmp/csv_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.tar.gz {{ csv_pattern }}
+        tar -czf /tmp/csv_{{ inventory_hostname }}_{{ epoch_timestamp }}.tar.gz {{ csv_pattern }}
       when: binary_check.stat.exists
       register: archive_result
       args:
@@ -218,7 +229,7 @@
 
     - name: 下载压缩包
       fetch:
-        src: "/tmp/csv_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.tar.gz"
+        src: "/tmp/csv_{{ inventory_hostname }}_{{ epoch_timestamp }}.tar.gz"
         dest: "{{ local_base }}/{{ inventory_hostname }}.tar.gz"
         flat: yes
       when: binary_check.stat.exists
@@ -278,7 +289,7 @@
     - name: 打包本地下载目录
       archive:
         path: "{{ local_base }}"
-        dest: "{{ local_base }}_{{ ansible_date_time.epoch }}.tar.gz"
+        dest: "{{ local_base }}_{{ epoch_timestamp }}.tar.gz"
         format: gz
       delegate_to: localhost
       become: no
