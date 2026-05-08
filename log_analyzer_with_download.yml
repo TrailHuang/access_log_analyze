@@ -1,37 +1,30 @@
-# log_export_with_download.yml
+# log_analyzer_with_download.yml
 - hosts: IS
   become: yes
   vars:
     # 路径配置
     analyzer_dir: "/home/sino/access_log_analyzer_release"
-    analyzer_binary: "access_log_analyzer_linux_amd64_new"
+    analyzer_bin: "access_log_analyzer_linux_amd64"
 
-    # 日志配置
+    # 日志和输出配置
     log_dir: "/home/sino/fangwenrzhi"
+    output_file: "result.csv"
 
-    # 时间参数
-    start_time: "20260506195500"
-    end_time: "20260506200500"
-    export_start_time: "20260506200000"
-    export_end_time: "20260506200200"
-
-    # IP地址参数
-    destination_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
-    source_ip: "240E:00B1:9801:040C:0003:0000:0000:0016"
-
-    # 其他参数
-    filter_logic: 1
+    # 分析参数
+    fields: "dip,domain"
+    start_time: "20260506200000"
+    end_time: "20260506210000"
 
     # 监控配置
-    pid_file: "/tmp/analyzer_{{ ansible_date_time.date }}.pid"
+    pid_file: "/tmp/access_analyzer_{{ ansible_date_time.date }}.pid"
     max_wait_time: 30
 
-    # 下载配置
-    csv_pattern: "export_sip_*.csv"
+    # CSV文件匹配模式
+    csv_pattern: "result*.csv"
 
     # 等待配置（可调整）
     wait_retries: 120  # 最大重试次数
-    wait_delay: 5      # 每次间隔秒数
+    wait_delay: 10      # 每次间隔秒数
 
   pre_tasks:
     - name: 生成固定时间戳
@@ -42,20 +35,21 @@
 
     - name: 设置本地基础目录
       set_fact:
-        local_base: "/home/sino/access_log_analyzer_release/export_{{ execution_timestamp }}"
-        output_log_file: "export_log_{{ execution_timestamp }}"
+        local_base: "/home/sino/access_log_analyzer_release/analyzer_{{ execution_timestamp }}"
+        run_log: "analyzer_log_{{ execution_timestamp }}"
+        analyzer_result_dir: "/home/sino/access_log_analyzer_release/analyzer_result_{{ execution_timestamp }}"
       run_once: yes
 
     - name: 检查环境
       debug:
         msg: |
-          启动分析器配置：
+          启动访问日志分析器配置：
           主机: {{ inventory_hostname }}
-          分析器: {{ analyzer_dir }}/{{ analyzer_binary }}
+          分析器: {{ analyzer_dir }}/{{ analyzer_bin }}
+          日志目录: {{ log_dir }}
           时间范围: {{ start_time }} 到 {{ end_time }}
-          导出时间: {{ export_start_time }} 到 {{ export_end_time }}
-          源IP: {{ source_ip }}
-          目标IP: {{ destination_ip }}
+          输出字段: {{ fields }}
+          输出文件: {{ output_file }}
           本地下载目录: {{ local_base }}
           执行时间戳: {{ execution_timestamp }}
           最大等待时间: {{ wait_retries * wait_delay }}秒
@@ -65,27 +59,43 @@
     # ==================== 启动分析器 ====================
     - name: 检查分析器二进制文件
       stat:
-        path: "{{ analyzer_dir }}/{{ analyzer_binary }}"
+        path: "{{ analyzer_dir }}/{{ analyzer_bin }}"
       register: binary_check
       failed_when: not binary_check.stat.exists
       ignore_errors: no
 
-    - name: 生成启动脚本
+    - name: 检查是否已在运行
+      shell: |
+        # 使用更精确的匹配，排除grep自身
+        PID_COUNT=$(ps aux | grep "{{ analyzer_bin }}" | grep "-start {{ start_time }}" | grep "-end {{ end_time }}" | grep -v grep | wc -l)
+        if [ "$PID_COUNT" -gt 0 ]; then
+          echo "RUNNING"
+        else
+          echo "NOT_RUNNING"
+        fi
+      register: existing_process
+      when: binary_check.stat.exists
+      changed_when: false
+      ignore_errors: yes
+
+    - name: 创建启动脚本
       copy:
         content: |
           #!/bin/bash
+
+          # 切换到工作目录
           cd {{ analyzer_dir }}
 
-          # 检查是否已在运行
-          if pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" > /dev/null; then
-            echo "分析器已经在运行，跳过启动"
+          # 如果已在运行，则跳过
+          if pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" > /dev/null 2>&1; then
+            echo "分析器已在运行，跳过启动"
             exit 0
           fi
 
-          # 清理旧日志
-          if [ -f "{{ analyzer_dir }}/{{ output_log_file }}" ]; then
-            echo "备份旧日志: {{ analyzer_dir }}/{{ output_log_file }}"
-            mv "{{ analyzer_dir }}/{{ output_log_file }}" "{{ analyzer_dir }}/{{ output_log_file }}.bak_$(date +%Y%m%d%H%M%S)"
+          # 清理旧的日志文件
+          if [ -f "{{ analyzer_dir }}/{{ run_log }}" ]; then
+            echo "备份旧日志: {{ analyzer_dir }}/{{ run_log }}"
+            mv "{{ analyzer_dir }}/{{ run_log }}" "{{ analyzer_dir }}/{{ run_log }}.bak_$(date +%Y%m%d%H%M%S)"
           fi
 
           # 清理旧版CSV文件
@@ -94,41 +104,42 @@
           echo "旧版CSV文件清理完成"
 
           # 启动分析器
-          nohup ./{{ analyzer_binary }} \
+          nohup ./{{ analyzer_bin }} \
             -log_path {{ log_dir }} \
-            -export \
+            -fields "{{ fields }}" \
             -start {{ start_time }} \
             -end {{ end_time }} \
-            -export_start {{ export_start_time }} \
-            -export_end {{ export_end_time }} \
-            -dip "{{ destination_ip }}" \
-            -sip "{{ source_ip }}" \
-            -export_filter_logic {{ filter_logic }} \
-            > ./{{ output_log_file }} 2>&1 &
+            -output {{ output_file }} \
+            > ./{{ run_log }} 2>&1 &
 
           # 获取进程ID
           ANALYZER_PID=$!
           echo "分析器启动成功，PID: $ANALYZER_PID"
           echo $ANALYZER_PID > {{ pid_file }}
 
-        dest: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+          # 记录启动信息
+          echo "启动时间: $(date)" >> {{ pid_file }}
+          echo "启动命令: ./{{ analyzer_bin }} -log_path {{ log_dir }} -fields \"{{ fields }}\" -start {{ start_time }} -end {{ end_time }} -output {{ output_file }}" >> {{ pid_file }}
+        dest: "/tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh"
         mode: '0755'
-      when: binary_check.stat.exists
+      when:
+        - binary_check.stat.exists
+        - existing_process.stdout == "NOT_RUNNING"
 
     - name: 执行启动脚本
       shell: |
-        /tmp/start_analyzer_{{ ansible_date_time.date }}.sh
-      register: analyzer_start_result
+        /tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh
+      register: start_result
       args:
         executable: /bin/bash
-      when: binary_check.stat.exists
-      async: "{{ max_wait_time }}"
-      poll: 0
+      when:
+        - binary_check.stat.exists
+        - existing_process.stdout == "NOT_RUNNING"
       ignore_errors: yes
 
     - name: 检查输出日志
       shell: |
-        tail -n 10 {{ analyzer_dir }}/{{ output_log_file }} 2>/dev/null || echo "日志文件不存在"
+        tail -n 10 {{ analyzer_dir }}/{{ run_log }} 2>/dev/null || echo "日志文件不存在"
       register: analyzer_log
       when: binary_check.stat.exists
       changed_when: false
@@ -152,8 +163,8 @@
         else
           echo "PID文件不存在: {{ pid_file }}"
 
-          if pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" > /dev/null 2>&1; then
-            FOUND_PID=$(pgrep -f "{{ analyzer_binary }}.*-export_start {{ export_start_time }}" | head -1)
+          if pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" > /dev/null 2>&1; then
+            FOUND_PID=$(pgrep -f "{{ analyzer_bin }}.*-start {{ start_time }}.*-end {{ end_time }}" | head -1)
             echo "状态: RUNNING (通过进程名找到 PID: $FOUND_PID)"
             exit 1
           else
@@ -173,7 +184,7 @@
       debug:
         msg: |
           主机: {{ inventory_hostname }}
-          执行状态: {{ check_result.stdout | default('N/A') }}
+          执行状态: {{ check_result.stdout_lines[-1] if check_result.stdout_lines is defined else 'N/A' }}
           重试次数: {{ check_result.attempts | default(0) }}
           最终返回码: {{ check_result.rc | default('N/A') }}
       when: binary_check.stat.exists
@@ -189,7 +200,7 @@
 
     - name: 检查导出文件
       fail:
-        msg: "未找到导出文件，请检查日志: {{ analyzer_dir }}/{{ output_log_file }}"
+        msg: "未找到导出文件，请检查日志: {{ analyzer_dir }}/{{ run_log }}"
       when:
         - binary_check.stat.exists
         - export_files.stdout == "NO_FILES"
@@ -261,13 +272,6 @@
       changed_when: false
       when: binary_check.stat.exists
 
-    - name: 显示CSV文件统计结果
-      debug:
-        msg: |
-          CSV文件日志统计 - {{ inventory_hostname }}:
-          {{ csv_line_counts.stdout_lines | default([]) | join('\n') }}
-      when: binary_check.stat.exists
-
     - name: 计算总日志数
       shell: |
         cd {{ local_base }}/{{ inventory_hostname }}
@@ -300,9 +304,95 @@
 
     - name: 清理临时脚本
       file:
-        path: "/tmp/start_analyzer_{{ ansible_date_time.date }}.sh"
+        path: "/tmp/start_access_analyzer_{{ ansible_date_time.date }}.sh"
         state: absent
       when: binary_check.stat.exists
+
+    # ==================== 执行Merge命令 ====================
+    - name: 计算时间差（秒）
+      shell: |
+        # 解析开始时间和结束时间
+        START_YEAR={{ start_time[0:4] }}
+        START_MONTH={{ start_time[4:6] }}
+        START_DAY={{ start_time[6:8] }}
+        START_HOUR={{ start_time[8:10] }}
+        START_MIN={{ start_time[10:12] }}
+        START_SEC={{ start_time[12:14] }}
+        
+        END_YEAR={{ end_time[0:4] }}
+        END_MONTH={{ end_time[4:6] }}
+        END_DAY={{ end_time[6:8] }}
+        END_HOUR={{ end_time[8:10] }}
+        END_MIN={{ end_time[10:12] }}
+        END_SEC={{ end_time[12:14] }}
+        
+        # 转换为时间戳并计算差值
+        START_TS=$(date -d "${START_YEAR}-${START_MONTH}-${START_DAY} ${START_HOUR}:${START_MIN}:${START_SEC}" +%s)
+        END_TS=$(date -d "${END_YEAR}-${END_MONTH}-${END_DAY} ${END_HOUR}:${END_MIN}:${END_SEC}" +%s)
+        DURATION=$((END_TS - START_TS))
+        
+        echo $DURATION
+      delegate_to: localhost
+      register: duration_result
+      changed_when: false
+      when: binary_check.stat.exists
+
+    - name: 执行Merge命令1
+      shell: |
+        cd {{ analyzer_dir }}
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields }}
+      delegate_to: localhost
+      become: no
+      register: merge_result_1
+      when: binary_check.stat.exists
+      ignore_errors: yes
+
+    - name: 执行Merge命令2
+      shell: |
+        cd {{ analyzer_dir }}
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields "domain" -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_domain
+      delegate_to: localhost
+      become: no
+      register: merge_result_2
+      when: binary_check.stat.exists
+      ignore_errors: yes
+
+    - name: 执行Merge命令3
+      shell: |
+        cd {{ analyzer_dir }}
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields }} -redistribute_empty
+      delegate_to: localhost
+      become: no
+      register: merge_result_3
+      when: binary_check.stat.exists
+      ignore_errors: yes
+
+    - name: 执行Merge命令4
+      shell: |
+        cd {{ analyzer_dir }}
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields "domain" -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_domain -redistribute_empty
+      delegate_to: localhost
+      become: no
+      register: merge_result_4
+      when: binary_check.stat.exists
+      ignore_errors: yes
+
+    - name: 显示Merge结果
+      debug:
+        msg: |
+          【Merge执行结果】
+          返回码: {{ merge_result.rc | default('N/A') }}
+          {% if merge_result.stdout is defined and merge_result.stdout != '' %}
+          输出:
+          {{ merge_result.stdout }}
+          {% endif %}
+          {% if merge_result.stderr is defined and merge_result.stderr != '' %}
+          错误:
+          {{ merge_result.stderr }}
+          {% endif %}
+      when:
+        - binary_check.stat.exists
+        - merge_result is defined
 
     # ==================== 打包local_base目录 ====================
     - name: 打包本地下载目录
@@ -319,7 +409,22 @@
       debug:
         msg: "已打包至: {{ final_archive_result.dest }}"
       when: binary_check.stat.exists
+    
+    - name: 打包分析结果
+      archive:
+        path: "{{ analyzer_result_dir }}"
+        dest: "{{ analyzer_result_dir }}_{{ epoch_timestamp }}.tar.gz"
+        format: gz
+      delegate_to: localhost
+      become: no
+      when: binary_check.stat.exists
+      register: analyzer_archive_result
 
+    - name: 显示打包结果
+      debug:
+        msg: "已打包至: {{ analyzer_archive_result.dest }}"
+      when: binary_check.stat.exists
+      
     # ==================== 验证结果 ====================
     - name: 统计文件数量
       shell: "find {{ local_base }}/{{ inventory_hostname }} -name '*.csv' -type f | wc -l"
@@ -329,7 +434,7 @@
       when: binary_check.stat.exists
 
   post_tasks:
-   
+  
     - name: 显示导出统计
       debug:
         msg: |
@@ -338,3 +443,4 @@
             总日志数:   {{ total_log_count.stdout | default('N/A') }}
       when: binary_check.stat.exists
 
+ 

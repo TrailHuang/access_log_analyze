@@ -30,11 +30,14 @@ func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds f
 	}
 
 	var csvFiles []string
+	var dirCount int
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".csv") {
+
+		// 检查是否为CSV文件（不区分大小写）
+		if strings.HasSuffix(strings.ToLower(info.Name()), ".csv") {
 			csvFiles = append(csvFiles, path)
 		}
 		return nil
@@ -44,7 +47,14 @@ func MergeCSVFiles(dirPath string, fieldsStr string, topN int, durationSeconds f
 		return fmt.Errorf("遍历目录失败: %v", err)
 	}
 
-	fmt.Printf("找到 %d 个CSV文件\n", len(csvFiles))
+	fmt.Printf("遍历完成: %d 个目录, %d 个CSV文件\n", dirCount, len(csvFiles))
+	if len(csvFiles) > 0 && len(csvFiles) <= 20 {
+		fmt.Println("CSV文件列表:")
+		for _, f := range csvFiles {
+			relPath, _ := filepath.Rel(dirPath, f)
+			fmt.Printf("  - %s\n", relPath)
+		}
+	}
 
 	upFiles, downFiles, totalFiles := classifyFiles(csvFiles)
 	fmt.Printf("up文件: %d 个, down文件: %d 个, total文件: %d 个\n", len(upFiles), len(downFiles), len(totalFiles))
