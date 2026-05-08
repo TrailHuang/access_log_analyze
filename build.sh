@@ -19,6 +19,8 @@ mkdir -p "${RELEASE_DIR}"
 cp build/${BINARY_NAME}_linux_amd64  "${RELEASE_DIR}/"
 cp build/${BINARY_NAME}_linux_arm64  "${RELEASE_DIR}/"
 cp config.json                        "${RELEASE_DIR}/"
+cp log_analyzer_with_download.yml     "${RELEASE_DIR}/"
+cp log_export_with_download.yml     "${RELEASE_DIR}/"
 cp 使用说明.md            "${RELEASE_DIR}/"
 
 tar -czf "${TAR_NAME}" "${RELEASE_DIR}"
