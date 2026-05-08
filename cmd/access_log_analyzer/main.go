@@ -41,7 +41,7 @@ func main() {
 	exportStart := flag.String("export_start", "", "导出时间范围开始(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
 	exportEnd := flag.String("export_end", "", "导出时间范围结束(格式: YYYYMMDDHHmmss，精确到秒，匹配日志第10字段UTC时间)")
 	exportFilterLogic := flag.Int("export_filter_logic", 0, "导出过滤逻辑：0=与(默认，所有条件都需满足), 1=或(满足任一条件即可)")
-	exportTimeReadable := flag.Bool("export_time_readable", false, "导出时将UTC时间戳转为可读格式(YYYY-MM-DD HH:mm:ss)")
+	exportTimeReadable := flag.Bool("export_time_readable", true, "导出时将UTC时间戳转为可读格式(YYYY-MM-DD HH:mm:ss)")
 
 	// 过滤参数
 	sipFilter := flag.String("sip", "", "源IP过滤,支持逗号分隔多个值,支持*模糊匹配")
