@@ -197,8 +197,8 @@ func createCSVFile(path string) (*os.File, *csv.Writer, error) {
 	header := []string{
 		"HouseId", "源IP", "目的IP", "协议类型", "源端口", "目的端口",
 		"域名", "URL", "Duration", "UTC时间", "Title", "流量类型",
-		"传输层协议", "应用层协议", "业务层协议", "Referer", "Location",
-		"网站内容", "访问数据量", "上行流量", "下行流量",
+		"应用层协议", "业务层协议", "Referer", "Location", "网站内容",
+		"访问数据量", "上行流量", "下行流量", "应用名称",
 	}
 	writer.Write(header)
 
