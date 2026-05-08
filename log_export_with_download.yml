@@ -4,7 +4,7 @@
   vars:
     # 路径配置
     analyzer_dir: "/home/sino/access_log_analyzer_release"
-    analyzer_binary: "access_log_analyzer_linux_amd64_new"
+    analyzer_binary: "access_log_analyzer_linux_amd64"
 
     # 日志配置
     log_dir: "/home/sino/fangwenrzhi"

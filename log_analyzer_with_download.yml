@@ -340,7 +340,7 @@
     - name: 执行Merge命令1
       shell: |
         cd {{ analyzer_dir }}
-        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields }}
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields | replace(',', '_') }}
       delegate_to: localhost
       become: no
       register: merge_result_1
@@ -360,7 +360,7 @@
     - name: 执行Merge命令3
       shell: |
         cd {{ analyzer_dir }}
-        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields }} -redistribute_empty
+        ./{{ analyzer_bin }} -merge {{ local_base }} -fields {{ fields }} -top 10 -duration {{ duration_result.stdout }} -output {{ analyzer_result_dir }}/merged_{{ fields | replace(',', '_') }} -redistribute_empty
       delegate_to: localhost
       become: no
       register: merge_result_3
